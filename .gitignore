@@ -209,6 +209,9 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Import folder (CSV bestanden)
+import/*.csv
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
