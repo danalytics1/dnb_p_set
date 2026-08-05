@@ -26,6 +26,7 @@ from .loader import load_csv, load_block, detect_set_type
 from .constants import BLOCKS, VARIABLE_ALIASES, BlockSpec
 from . import analysis
 from . import plotting
+from .reporting import build_html_report
 
 __all__ = [
     "ScenarioSet",
@@ -37,6 +38,7 @@ __all__ = [
     "BlockSpec",
     "analysis",
     "plotting",
+    "build_html_report",
 ]
 
 __version__ = "0.1.0"
