@@ -1,8 +1,13 @@
 """
 Visualisation utilities for DNB scenario sets.
 
-All plotting functions use :mod:`matplotlib` and return the
-``(fig, ax)`` tuple so callers can further customise the output.
+These are the generic, array-level helpers: every function takes a NumPy
+array or DataFrame and returns the ``(fig, ax)`` tuple so callers can
+customise the output further.
+
+For the charts used by the HTML report — which take
+:class:`~dnb_p_set.metrics.ScenarioMetrics` bundles and overlay two scenario
+sets — see :mod:`dnb_p_set.charts`.
 """
 
 from __future__ import annotations
@@ -257,8 +262,6 @@ def plot_correlation_heatmap(
         ``(fig, ax)`` matplotlib objects.
     """
     plt = _get_mpl()
-
-    import numpy as np
 
     fig, ax = plt.subplots(figsize=figsize)
     mat = corr_df.to_numpy()

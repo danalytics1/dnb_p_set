@@ -22,24 +22,32 @@ References
 """
 
 from .scenario_set import ScenarioSet
-from .loader import load_csv, load_block, detect_set_type
+from .loader import load_csv, load_block, load_blocks, detect_set_type
 from .constants import BLOCKS, VARIABLE_ALIASES, BlockSpec
 from . import analysis
+from . import charts
+from . import curves
 from . import plotting
+from .metrics import ScenarioMetrics, compute_metrics
 from .reporting import build_html_report
 
 __all__ = [
     "ScenarioSet",
     "load_csv",
     "load_block",
+    "load_blocks",
     "detect_set_type",
     "BLOCKS",
     "VARIABLE_ALIASES",
     "BlockSpec",
     "analysis",
+    "charts",
+    "curves",
     "plotting",
+    "ScenarioMetrics",
+    "compute_metrics",
     "build_html_report",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "danalytics1"

@@ -193,3 +193,25 @@ VARIABLE_ALIASES: dict[str, str] = {
 
 # Standard percentiles used for fan-chart / descriptive statistics
 DEFAULT_PERCENTILES: list[float] = [5.0, 10.0, 25.0, 50.0, 75.0, 90.0, 95.0]
+
+# ---------------------------------------------------------------------------
+# Reporting defaults
+# ---------------------------------------------------------------------------
+
+# Maturities (in years) shown on term-structure charts and tables
+DEFAULT_MATURITIES: list[int] = [1, 2, 3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60, 80, 100]
+
+# Key maturities tracked over the projection horizon
+KEY_MATURITIES: list[int] = [1, 10, 30, 50]
+
+# Projection years at which the cross-sectional curve distribution is shown
+CURVE_HORIZONS: list[int] = [0, 1, 5, 10, 20, 40]
+
+# Projection years used for cross-sectional distributions of returns
+RETURN_HORIZONS: list[int] = [1, 5, 10, 20, 40]
+
+# Length (years) of the flat cashflow stream used as a pension-liability proxy
+LIABILITY_HORIZON: int = 60
+
+# Annual cost load DNB applies to convert gross to net returns (20 bp)
+COST_LOAD: float = 0.0020
