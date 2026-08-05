@@ -170,6 +170,16 @@ fig, ax = plotting.plot_yield_curve(yc_df, t=0)
 
 ### HTML rapportage
 
+
+### Report script
+
+```bash
+dnb-p-set-report --current DNB_P_scenarioset_2025Q1.csv --output p_set_report.html
+
+# With comparison to previous quarter
+dnb-p-set-report --current DNB_P_scenarioset_2025Q1.csv --previous DNB_P_scenarioset_2024Q4.csv --output p_set_report.html
+```
+
 ```python
 from dnb_p_set import ScenarioSet, build_html_report
 

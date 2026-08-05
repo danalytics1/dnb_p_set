@@ -48,3 +48,6 @@ include = ["dnb_p_set*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[project.scripts]
+dnb-p-set-report = "dnb_p_set.report_cli:main"
