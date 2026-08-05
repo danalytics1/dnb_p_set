@@ -168,6 +168,23 @@ yc_df = ss.yield_curve(t=0)
 fig, ax = plotting.plot_yield_curve(yc_df, t=0)
 ```
 
+### HTML rapportage
+
+```python
+from dnb_p_set import ScenarioSet, build_html_report
+
+current = ScenarioSet.from_csv("DNB_P_scenarioset_2025Q1.csv")
+previous = ScenarioSet.from_csv("DNB_P_scenarioset_2024Q4.csv")
+
+html = build_html_report(current, previous_set=previous)
+
+with open("p_set_report.html", "w", encoding="utf-8") as f:
+    f.write(html)
+```
+
+Het rapport bevat een overzicht van de huidige set en, indien opgegeven, een sectie
+met verschillen ten opzichte van de vorige set.
+
 ---
 
 ## Variable aliases
