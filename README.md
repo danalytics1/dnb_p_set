@@ -78,6 +78,11 @@ ss = ScenarioSet.from_csv(
 )
 ```
 
+The loader streams the file **once** and copies each chunk into the blocks it
+overlaps (`loader.load_blocks`), so loading a whole 1.1 GB set takes about ten
+seconds instead of one full scan per block. Pass `single_pass=False` to
+`load_csv` for the older block-at-a-time behaviour.
+
 ### Access raw arrays
 
 ```python
@@ -106,6 +111,11 @@ mean = ss.mean_path("equity_return")
 
 ### Yield curve
 
+The set ships the affine term-structure parameters, not the curves themselves.
+The annually compounded zero rate follows DNB formula (1):
+
+$$y(\tau, t) = \exp\!\left[-\frac{1}{\tau}\Big(\phi(\tau,t) + \sum_{i=1}^{3}\Psi_i(\tau)\,X_i(t)\Big)\right] - 1$$
+
 ```python
 # Zero-coupon yield curves at time t=0 for all scenarios
 yc = ss.yield_curve(
@@ -116,11 +126,38 @@ yc = ss.yield_curve(
 )
 print(yc.mean())         # mean yield curve
 
-# Convenience wrapper
+# Convenience wrappers
 mean_yc = ss.mean_yield_curve(t=0, maturities=[1, 5, 10, 20, 30])
+rates = ss.zero_rates(t=0, maturities=[10])       # raw NumPy array
+pv = ss.annuity_pv(t=0)                            # flat 60-year cashflow
+
+# Continuous compounding is available but is NOT the DNB convention
+# (it runs roughly 3-5 bp below the annually compounded rate)
+yc_cc = ss.yield_curve(t=0, compounding="continuous")
+```
+
+The underlying maths lives in `dnb_p_set.curves` and works on plain arrays:
+
+```python
+from dnb_p_set import curves
+
+phi, psi = ss.curve_parameters(measure="nominal")
+states = ss.state_matrix()                    # (n_scenarios, 3, n_t)
+
+rates = curves.zero_rates(phi, psi, states, t=0, maturities=[1, 10, 30])
+prices = curves.discount_factor(phi, psi, states, t=0, maturities=[10])
+fwd = curves.forward_rates(phi, psi, states, t=0, maturities=range(1, 11))
+dur = curves.macaulay_duration(phi, psi, states, 0, cashflows=np.ones(60))
+bei = curves.breakeven_inflation(nominal_rates, real_rates)
 ```
 
 ### Analysis utilities
+
+> **Returns are simple, not log returns.** DNB defines the equity and inflation
+> blocks as $(S_{t+1} - S_t)/S_t$, so compounding uses $\prod(1+r)$ rather than
+> $\exp(\sum r)$. On the 2026Q3 P-set the two differ materially: 5.52 % versus
+> 6.88 % geometric mean. Pass `log_returns=True` if your array really does hold
+> log returns.
 
 ```python
 from dnb_p_set import analysis
@@ -132,6 +169,19 @@ cumret = analysis.cumulative_return(arr)
 
 # Annualised geometric return
 ann = analysis.annualised_return(arr)
+
+# Geometric mean per year (the figure DNB calibrates: ~5.4% gross)
+geo = analysis.geometric_mean_return(arr)
+
+# Monte-Carlo standard error and confidence interval (DNB formulas 2-5)
+se = analysis.standard_error(arr[:, 0])
+mean, lo, hi = analysis.mean_confidence_interval(arr[:, 0])
+
+# Confidence interval around a percentile (DNB formulas 6-7)
+est, lo, hi = analysis.percentile_confidence_interval(arr[:, 0], p=5.0)
+
+# Full one-shot summary of a cross-section
+stats = analysis.distribution_stats(arr[:, 0])
 
 # Value-at-Risk (loss) at 95% confidence per time step
 var95 = analysis.value_at_risk(arr, confidence=0.95)
@@ -151,13 +201,15 @@ corr = analysis.correlation_matrix(
 
 ### Plotting
 
+`dnb_p_set.plotting` holds generic helpers that take raw arrays:
+
 ```python
 from dnb_p_set import plotting
 
 arr = ss.get("equity_return")
 
 # Fan chart with percentile bands
-fig, ax = plotting.plot_fan_chart(arr, title="Equity return fan chart", ylabel="Log return")
+fig, ax = plotting.plot_fan_chart(arr, title="Equity return fan chart", ylabel="Return")
 fig.savefig("equity_fan.png")
 
 # Histogram at a specific time step
@@ -168,32 +220,75 @@ yc_df = ss.yield_curve(t=0)
 fig, ax = plotting.plot_yield_curve(yc_df, t=0)
 ```
 
-### HTML rapportage
-
-
-### Report script
-
-```bash
-dnb-p-set-report --current DNB_P_scenarioset_2025Q1.csv --output p_set_report.html
-
-# With comparison to previous quarter
-dnb-p-set-report --current DNB_P_scenarioset_2025Q1.csv --previous DNB_P_scenarioset_2024Q4.csv --output p_set_report.html
-```
+`dnb_p_set.charts` holds the report charts, which take metrics bundles and
+overlay the current set (blue) against the previous one (orange):
 
 ```python
-from dnb_p_set import ScenarioSet, build_html_report
+from dnb_p_set import charts
 
-current = ScenarioSet.from_csv("DNB_P_scenarioset_2025Q1.csv")
-previous = ScenarioSet.from_csv("DNB_P_scenarioset_2024Q4.csv")
+fig = charts.starting_curve(current, previous, key="nominal")
+fig = charts.curve_fan_grid(current, previous, key="nominal")
+fig = charts.rate_path_grid(current, previous, key="nominal")
+fig = charts.return_histogram(current, previous, key="equity", horizon=20)
+fig = charts.annualised_fan(current, previous, key="equity")
+fig = charts.correlation_heatmap(current, previous)
 
-html = build_html_report(current, previous_set=previous)
-
-with open("p_set_report.html", "w", encoding="utf-8") as f:
-    f.write(html)
+uri = charts.figure_to_data_uri(fig)   # inline into HTML
 ```
 
-Het rapport bevat een overzicht van de huidige set en, indien opgegeven, een sectie
-met verschillen ten opzichte van de vorige set.
+---
+
+## HTML report
+
+A single self-contained HTML file (charts inlined as data URIs, no assets
+alongside it) covering:
+
+| Section | Contents |
+|---|---|
+| **Kernbevindingen** | KPI tiles with the change versus the previous set, flagged when the change is inside the combined Monte-Carlo standard error; faceted delta bar chart |
+| **Rentetermijnstructuur** | Starting curve per measure (nominal / real EU / real NL) with the change in bp per maturity; cross-sectional curve distribution at t = 0, 1, 5, 10, 20, 40; percentile fans of the 1y/10y/30y/50y rate over the whole projection; implied break-even inflation |
+| **Aandelenrendement** | One-year and long-horizon return distributions, annualised-return fan, cumulative index fan (log scale), mean/volatility stability per projection year, distribution statistics per horizon |
+| **Prijsinflatie NL & EU** | The same treatment for both inflation blocks |
+| **Verplichtingenproxy** | Present value and Macaulay duration of a flat 60-year cashflow on the nominal curve — turns a curve shift into a value |
+| **Samenhang** | Year-1 correlation matrix plus its change; automatically flags variable pairs that move in lockstep |
+
+Every chart carries the table it was drawn from in a collapsible block.
+
+```bash
+dnb-p-set-report --current "import/CP2022 P scenarioset 100K 2026Q3.csv" --output report.html
+
+# With comparison to the previous quarter
+dnb-p-set-report \
+  --current  "import/CP2022 P scenarioset 100K 2026Q3.csv" \
+  --previous "import/CP2022 P scenarioset 100K 2026Q2.csv" \
+  --output   report.html
+```
+
+Or without installing the package: `python generate_report.py --current … --output …`.
+
+Labels (`2026Q3`, `2026Q2`) are read from the filename; override with `--label`
+/ `--previous-label`, and the report title with `--title`.
+
+Each set is loaded, reduced to metrics, then released, so peak memory stays at
+roughly one set (~0.5 GB) rather than two. A full two-file run takes about
+2.5 minutes on a 1.1 GB pair.
+
+```python
+from dnb_p_set import ScenarioSet, compute_metrics, build_html_report
+
+current = compute_metrics(ScenarioSet.from_csv("2026Q3.csv"), label="2026Q3")
+previous = compute_metrics(
+    ScenarioSet.from_csv("2026Q2.csv"), label="2026Q2", reference=current
+)
+
+with open("report.html", "w", encoding="utf-8") as f:
+    f.write(build_html_report(current, previous))
+```
+
+Passing `reference=current` makes the previous set reuse the current set's
+histogram bins, so the two distributions are drawn on identical bins.
+`build_html_report` also accepts raw `ScenarioSet` objects and will reduce them
+itself.
 
 ---
 
@@ -230,6 +325,25 @@ pytest
 # Run tests with coverage
 pytest --cov=dnb_p_set --cov-report=term-missing
 ```
+
+---
+
+## Changes in 0.2.0
+
+Two corrections change results, so pin `0.1.x` if you depend on the old
+behaviour:
+
+- **`yield_curve` now follows DNB formula (1)** and returns an annually
+  compounded rate, `exp(-A/τ) - 1`. It previously returned the continuously
+  compounded `-A/τ`, roughly 3–5 bp lower. Pass `compounding="continuous"` for
+  the old numbers.
+- **`cumulative_return` / `annualised_return` now treat the input as simple
+  returns**, which is what DNB publishes, compounding with `Π(1+r)` instead of
+  `exp(Σ r)`. Pass `log_returns=True` for the old behaviour.
+
+New: `dnb_p_set.curves` (term-structure maths), `dnb_p_set.metrics` (report
+metrics bundles), `dnb_p_set.charts` (report charts), a single-pass CSV loader,
+and a rebuilt HTML report.
 
 ---
 

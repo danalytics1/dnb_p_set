@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dnb-p-set"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Python package for analyzing, describing and using the P and Q set simulations published by DNB (De Nederlandsche Bank) for the Wet Toekomst Pensioenen."
 readme = "README.md"
 license = { file = "LICENSE" }
