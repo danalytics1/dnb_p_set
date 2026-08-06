@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 #: Validated palette (see the project data-viz notes).  Slot 1 is the current
-#: set, slot 2 the previous set; the blue ramp carries the percentile fan.
+#: set, slot 2 the previous set; the blue ramp carries the percentile fan. 
 PALETTE = {
     "current": "#2a78d6",
     "previous": "#eb6834",
