@@ -13,7 +13,9 @@ from dnb_p_set.constants import BLOCKS
 
 @pytest.fixture()
 def equity_arr():
-    return make_block_array(BLOCKS["equity_return"], n_scenarios=N_TEST_SCENARIOS)
+    """Plausible simple annual equity returns (DNB calibration order of magnitude)."""
+    raw = make_block_array(BLOCKS["equity_return"], n_scenarios=N_TEST_SCENARIOS)
+    return 0.066 + 0.15 * raw
 
 
 class TestCumulativeReturn:
@@ -26,11 +28,23 @@ class TestCumulativeReturn:
         result = analysis.cumulative_return(equity_arr)
         assert (result > 0).all()
 
-    def test_first_column(self, equity_arr):
-        # First col = exp(first period log return)
-        expected = np.exp(equity_arr[:, 0])
+    def test_first_column_is_simple_compounding(self, equity_arr):
+        # DNB stores simple returns, so the first factor is 1 + r
+        expected = 1.0 + equity_arr[:, 0]
         np.testing.assert_allclose(
             analysis.cumulative_return(equity_arr)[:, 0], expected
+        )
+
+    def test_log_returns_opt_in(self, equity_arr):
+        expected = np.exp(equity_arr[:, 0])
+        np.testing.assert_allclose(
+            analysis.cumulative_return(equity_arr, log_returns=True)[:, 0], expected
+        )
+
+    def test_second_column_compounds(self, equity_arr):
+        expected = (1.0 + equity_arr[:, 0]) * (1.0 + equity_arr[:, 1])
+        np.testing.assert_allclose(
+            analysis.cumulative_return(equity_arr)[:, 1], expected
         )
 
 
@@ -40,11 +54,108 @@ class TestAnnualisedReturn:
         assert result.shape == equity_arr.shape
 
     def test_first_year(self, equity_arr):
-        # At t=0 (year 1): annualised == period return
-        expected = np.exp(equity_arr[:, 0]) - 1.0
+        # At horizon 1 the annualised return is just the period return
         np.testing.assert_allclose(
-            analysis.annualised_return(equity_arr)[:, 0], expected
+            analysis.annualised_return(equity_arr)[:, 0], equity_arr[:, 0]
         )
+
+    def test_matches_cumulative(self, equity_arr):
+        cumulative = analysis.cumulative_return(equity_arr)
+        annualised = analysis.annualised_return(equity_arr)
+        horizon = 10
+        np.testing.assert_allclose(
+            (1.0 + annualised[:, horizon - 1]) ** horizon,
+            cumulative[:, horizon - 1],
+        )
+
+
+class TestGeometricMeanReturn:
+    def test_below_arithmetic_mean(self, equity_arr):
+        # Volatility drag: the geometric mean sits below the arithmetic mean
+        assert analysis.geometric_mean_return(equity_arr) < equity_arr.mean()
+
+    def test_constant_return(self):
+        arr = np.full((10, 5), 0.05)
+        assert analysis.geometric_mean_return(arr) == pytest.approx(0.05)
+
+
+class TestStandardError:
+    def test_shrinks_with_sample_size(self):
+        rng = np.random.default_rng(7)
+        small = analysis.standard_error(rng.standard_normal((100, 1)))
+        large = analysis.standard_error(rng.standard_normal((10_000, 1)))
+        assert large[0] < small[0]
+
+    def test_matches_closed_form(self):
+        rng = np.random.default_rng(3)
+        values = rng.standard_normal((5_000, 1))
+        expected = values.std(ddof=0) / np.sqrt(values.shape[0])
+        np.testing.assert_allclose(analysis.standard_error(values)[0], expected)
+
+
+class TestConfidenceIntervals:
+    def test_mean_interval_brackets_the_mean(self):
+        rng = np.random.default_rng(11)
+        values = rng.standard_normal((2_000, 3))
+        mean, lower, upper = analysis.mean_confidence_interval(values)
+        assert (lower < mean).all()
+        assert (mean < upper).all()
+
+    def test_mean_interval_covers_truth(self):
+        rng = np.random.default_rng(12)
+        values = rng.normal(0.05, 0.15, (50_000, 1))
+        _, lower, upper = analysis.mean_confidence_interval(values)
+        assert lower[0] < 0.05 < upper[0]
+
+    def test_invalid_alpha(self):
+        with pytest.raises(ValueError):
+            analysis.mean_confidence_interval(np.zeros((10, 1)), alpha=0.0)
+
+    def test_percentile_interval_brackets_estimate(self):
+        rng = np.random.default_rng(13)
+        values = rng.standard_normal(20_000)
+        estimate, lower, upper = analysis.percentile_confidence_interval(values, 5.0)
+        assert lower <= estimate <= upper
+
+    def test_percentile_invalid_p(self):
+        with pytest.raises(ValueError):
+            analysis.percentile_confidence_interval(np.zeros(10), p=0.0)
+
+
+class TestDistributionStats:
+    def test_expected_keys(self, equity_arr):
+        stats = analysis.distribution_stats(equity_arr[:, 0])
+        for key in ("mean", "se", "std", "skew", "kurtosis", "var95", "es95", "p50"):
+            assert key in stats
+
+    def test_es_at_least_var(self, equity_arr):
+        stats = analysis.distribution_stats(equity_arr[:, 0])
+        assert stats["es95"] >= stats["var95"]
+
+    def test_normal_sample_has_small_skew(self):
+        rng = np.random.default_rng(5)
+        stats = analysis.distribution_stats(rng.standard_normal(50_000))
+        assert abs(stats["skew"]) < 0.1
+        assert abs(stats["kurtosis"]) < 0.1
+
+
+class TestHistogram:
+    def test_density_integrates_to_one(self, equity_arr):
+        edges, density = analysis.histogram(equity_arr[:, 0], bins=50)
+        assert len(density) == 50
+        widths = np.diff(edges)
+        assert (density * widths).sum() == pytest.approx(1.0, abs=0.02)
+
+    def test_reuses_supplied_edges(self, equity_arr):
+        edges, _ = analysis.histogram(equity_arr[:, 0], bins=30)
+        other_edges, density = analysis.histogram(equity_arr[:, 1], edges=edges)
+        np.testing.assert_array_equal(edges, other_edges)
+        assert len(density) == 30
+
+    def test_constant_sample(self):
+        edges, density = analysis.histogram(np.full(100, 0.02), bins=10)
+        assert len(density) == 10
+        assert np.isfinite(edges).all()
 
 
 class TestDescribeVariable:
