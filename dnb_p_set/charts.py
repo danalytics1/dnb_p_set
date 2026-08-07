@@ -31,7 +31,7 @@ __all__ = [
     "cumulative_fan",
     "annual_moments",
     "correlation_heatmap",
-    "kpi_delta_bars",
+    "headline_boxplots",
 ]
 
 #: Validated palette (see the project data-viz notes).  Slot 1 is the current
@@ -740,92 +740,135 @@ def correlation_heatmap(current, previous=None):
     return fig
 
 
-#: Titles for the magnitude cohorts of :func:`kpi_delta_bars`.
-_PANEL_TITLES = {
-    "niveaus": "Niveaus — rentes, rendementen en inflatie",
-    "risico": "Risicomaatstaven — volatiliteit en staartrisico",
+#: (series/curve key, lookup, maturity or None, box label, y-axis group) for
+#: :func:`headline_boxplots`. Equity returns swing an order of magnitude wider
+#: than the rate/inflation figures, so it gets its own axis.
+_HEADLINE_BOX_SPECS = [
+    ("series", "equity", None, "Aandelen-\nrendement\n1 jaar", "equity"),
+    ("curve", "nominal", 10, "Rente\n10 jaar", "rate"),
+    ("curve", "nominal", 30, "Rente\n30 jaar", "rate"),
+    ("series", "inflation_eu", None, "EU inflatie\n1 jaar", "rate"),
+    ("series", "inflation_nl", None, "NL inflatie\n1 jaar", "rate"),
+]
+
+#: Axis label and box colour per group in :func:`headline_boxplots`.
+_HEADLINE_AXIS_STYLE = {
+    "equity": ("Aandelenrendement", "current"),
+    "rate": ("Rente / inflatie", "accent"),
 }
 
 
-def kpi_delta_bars(current, previous, keys=None):
-    """Diverging bar chart of the change in every rate-like headline figure.
+def headline_boxplots(current):
+    """Side-by-side box plots of the headline distributions in projection year 1.
 
-    Level changes run to a few basis points while tail-risk changes run to
-    hundreds, so the figures are faceted by magnitude cohort — one panel per
-    cohort, each on its own scale, rather than one panel on which the small
-    changes would be invisible.
+    Built only from *current* — this chart never compares against a previous
+    set. Boxes come from the stored percentiles (p5/p25/p50/p75/p95) rather
+    than raw scenario draws, since :class:`~dnb_p_set.metrics.ScenarioMetrics`
+    only retains summarised percentiles: the whiskers are p5/p95, not the
+    usual 1.5×IQR rule, and there are no outlier points.
+
+    Equity returns are drawn against the left axis and the rate/inflation
+    figures against an independent right axis, since equity swings an order
+    of magnitude wider and would otherwise flatten the other boxes.
     """
     plt = _plt()
 
-    cohorts: dict = {}
-    for key, kpi in current.kpis.items():
-        if keys is not None and key not in keys:
+    rows = []
+    for kind, key, maturity, label, group in _HEADLINE_BOX_SPECS:
+        if kind == "series":
+            series = current.series.get(key)
+            frame = series.annual if series is not None else None
+        else:
+            curve = current.curves.get(key)
+            frame = curve.paths.get(maturity) if curve is not None else None
+        if frame is None or 1 not in frame.index:
             continue
-        if kpi.unit != "rate":
-            continue
-        prev_kpi = previous.kpis.get(key)
-        if prev_kpi is None:
-            continue
-        cohorts.setdefault(kpi.panel, []).append(
-            (kpi.label, (kpi.value - prev_kpi.value) * 10_000)
+        rows.append((group, label, frame.loc[1]))
+
+    if not rows:
+        raise ValueError("no headline distributions available for the current set")
+
+    fig, ax_left = _new_figure(plt, (9.5, 4.8))
+    ax_right = ax_left.twinx()
+    axes = {"equity": ax_left, "rate": ax_right}
+
+    positions = range(1, len(rows) + 1)
+    grouped: dict[str, tuple[list, list]] = {}
+    for pos, (group, label, row) in zip(positions, rows):
+        stat = {
+            "label": label,
+            "whislo": float(row["p5"]),
+            "q1": float(row["p25"]),
+            "med": float(row["p50"]),
+            "q3": float(row["p75"]),
+            "whishi": float(row["p95"]),
+            "mean": float(row["mean"]),
+            "fliers": [],
+        }
+        pos_list, stat_list = grouped.setdefault(group, ([], []))
+        pos_list.append(pos)
+        stat_list.append(stat)
+
+    for group, (pos_list, stat_list) in grouped.items():
+        ax = axes[group]
+        color = PALETTE[_HEADLINE_AXIS_STYLE[group][1]]
+        box = ax.bxp(
+            stat_list,
+            positions=pos_list,
+            widths=0.5,
+            showmeans=True,
+            meanline=False,
+            patch_artist=True,
+            manage_ticks=False,
+            zorder=3,
         )
+        for patch in box["boxes"]:
+            patch.set_facecolor(color)
+            patch.set_alpha(0.35)
+            patch.set_edgecolor(color)
+            patch.set_linewidth(1.3)
+        for element in ("whiskers", "caps"):
+            for line in box[element]:
+                line.set_color(color)
+                line.set_linewidth(1.2)
+        for line in box["medians"]:
+            line.set_color(PALETTE["ink"])
+            line.set_linewidth(1.6)
+        for mean in box["means"]:
+            mean.set_markerfacecolor(PALETTE["ink"])
+            mean.set_markeredgecolor(PALETTE["ink"])
 
-    if not cohorts:
-        raise ValueError("no comparable rate figures between the two sets")
+    ax_left.set_xlim(0.4, len(rows) + 0.6)
+    ax_left.set_xticks(list(positions))
+    ax_left.set_xticklabels([label for _, label, _ in rows], fontsize=9)
 
-    order = [p for p in _PANEL_TITLES if p in cohorts] + [
-        p for p in cohorts if p not in _PANEL_TITLES
-    ]
-    for rows in cohorts.values():
-        rows.sort(key=lambda item: item[1])
+    ax_left.set_facecolor(PALETTE["surface"])
+    ax_left.grid(True, axis="y", color=PALETTE["grid"], lw=0.8, zorder=0)
+    ax_left.set_axisbelow(True)
+    ax_left.spines["top"].set_visible(False)
+    ax_left.spines["bottom"].set_color(PALETTE["baseline"])
+    ax_left.tick_params(axis="x", colors=PALETTE["muted"], labelsize=9, length=0)
 
-    counts = [len(cohorts[p]) for p in order]
-    fig, axes = _new_figure(
-        plt,
-        (9.5, 0.38 * sum(counts) + 1.15 * len(order)),
-        nrows=len(order),
-        squeeze=False,
-        layout="constrained",
-        gridspec_kw={"height_ratios": counts},
-    )
-    flat = axes.ravel()
+    for group, ax in axes.items():
+        label, colorkey = _HEADLINE_AXIS_STYLE[group]
+        color = PALETTE[colorkey]
+        side = "left" if group == "equity" else "right"
+        ax.spines[side].set_color(color)
+        ax.spines[side].set_linewidth(1.2)
+        ax.tick_params(axis="y", colors=color, labelsize=9, length=0)
+        ax.set_ylabel(label, color=color, fontsize=9)
+        _as_percent(ax, axis="y", decimals=1)
 
-    for ax, panel in zip(flat, order):
-        rows = cohorts[panel]
-        labels = [row[0] for row in rows]
-        values = [row[1] for row in rows]
-        colors = [
-            PALETTE["positive"] if v >= 0 else PALETTE["negative"] for v in values
-        ]
-        ax.barh(range(len(rows)), values, color=colors, height=0.62, zorder=3)
-        ax.axvline(0, color=PALETTE["baseline"], lw=1.0, zorder=2)
-        ax.set_yticks(range(len(rows)))
-        ax.set_yticklabels(labels, fontsize=9)
-        ax.set_ylim(-0.7, len(rows) - 0.3)
+    ax_right.grid(False)
+    ax_right.spines["top"].set_visible(False)
+    ax_right.spines["left"].set_visible(False)
+    ax_right.spines["bottom"].set_visible(False)
 
-        span = max(max(abs(v) for v in values), 1.0)
-        for i, value in enumerate(values):
-            offset = span * 0.02
-            ax.text(
-                value + (offset if value >= 0 else -offset),
-                i,
-                f"{value:+.1f}",
-                va="center",
-                ha="left" if value >= 0 else "right",
-                fontsize=8.5,
-                color=PALETTE["secondary"],
-            )
-        ax.set_xlim(-span * 1.3, span * 1.3)
-        _style_axes(
-            ax,
-            xlabel="Verandering in basispunten",
-            title=_PANEL_TITLES.get(panel, panel),
-        )
-        ax.tick_params(axis="y", colors=PALETTE["secondary"])
-
-    fig.suptitle(
-        f"Kernmaatstaven: {current.label} minus {previous.label}",
+    ax_left.set_title(
+        f"Kernmaatstaven — verdeling in projectiejaar 1 ({current.label})",
         color=PALETTE["ink"],
-        fontsize=12,
+        fontsize=11,
+        loc="left",
+        pad=8,
     )
     return fig

@@ -310,6 +310,30 @@ def _toc(sections: list[tuple[str, str]]) -> str:
     return f'<nav class="toc">{links}</nav>'
 
 
+def _headline_box_table(current: ScenarioMetrics) -> str:
+    """Percentile table backing :func:`charts.headline_boxplots`."""
+    headers = ["Maatstaf", "Gemiddelde", "p5", "p25", "Mediaan", "p75", "p95"]
+    rows = []
+    for kind, key, maturity, label, _group in charts._HEADLINE_BOX_SPECS:
+        if kind == "series":
+            series = current.series.get(key)
+            frame = series.annual if series is not None else None
+        else:
+            curve = current.curves.get(key)
+            frame = curve.paths.get(maturity) if curve is not None else None
+        if frame is None or 1 not in frame.index:
+            continue
+        row = frame.loc[1]
+        rows.append(
+            [label.replace("\n", " ")]
+            + [
+                _fmt_rate(row[col])
+                for col in ("mean", "p5", "p25", "p50", "p75", "p95")
+            ]
+        )
+    return _table(rows, headers)
+
+
 def _headline_section(current: ScenarioMetrics, previous: ScenarioMetrics | None) -> str:
     tiles = []
     for kpi in current.kpis.values():
@@ -341,19 +365,22 @@ def _headline_section(current: ScenarioMetrics, previous: ScenarioMetrics | None
         f'<div class="tiles">{"".join(tiles)}</div>',
     ]
 
-    if previous is not None:
-        try:
-            fig = charts.kpi_delta_bars(current, previous)
-        except ValueError:
-            fig = None
-        if fig is not None:
-            body.append(
-                _figure(
-                    fig,
-                    "Verandering van elke rentegerelateerde kernmaatstaf, in "
-                    "basispunten. Positief betekent dat de huidige set hoger uitkomt.",
-                )
+    try:
+        box_fig = charts.headline_boxplots(current)
+    except ValueError:
+        box_fig = None
+    if box_fig is not None:
+        body.append(
+            _figure(
+                box_fig,
+                "Verdeling van de kernmaatstaven in projectiejaar 1, huidige set "
+                f"({escape(current.label)}). Box toont p25–p75 en mediaan, "
+                "whiskers p5–p95, stip het gemiddelde.",
+                _headline_box_table(current),
             )
+        )
+
+    if previous is not None:
         body.append(
             '<p class="note">Bij maatstaven die een verwachtingswaarde zijn wordt '
             "de verandering vergeleken met de gecombineerde Monte-Carlo-standaardfout "
