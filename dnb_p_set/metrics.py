@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -35,6 +36,17 @@ from .constants import (
     KEY_MATURITIES,
     LIABILITY_HORIZON,
     RETURN_HORIZONS,
+    WEALTH_HORIZONS,
+)
+from .lifecycle import (
+    DEFAULT_LIFECYCLE,
+    DEFAULT_MAATMENSEN,
+    DEFAULT_PORTEFEUILLES,
+    Lifecycle,
+    Maatmens,
+    Portefeuille,
+    portefeuille_returns,
+    project_wealth,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +55,8 @@ __all__ = [
     "Kpi",
     "CurveMetrics",
     "SeriesMetrics",
+    "MaatmensMetrics",
+    "LifecycleMetrics",
     "ScenarioMetrics",
     "compute_metrics",
 ]
@@ -151,6 +165,39 @@ class SeriesMetrics:
 
 
 @dataclass
+class MaatmensMetrics:
+    """Projected wealth of one maatmens, reduced to percentiles."""
+
+    maatmens: Maatmens
+    #: Allocation and contribution per projection year.
+    schedule: pd.DataFrame
+    #: Percentiles of the capital per projection year (index 0 … horizon).
+    paths: pd.DataFrame
+    #: Full distribution statistics of the capital, per reported horizon.
+    horizons: dict             # {horizon: dict[str, float]}
+    #: Starting age, i.e. the age at projection year 0.
+    startleeftijd: int = 0
+
+
+@dataclass
+class LifecycleMetrics:
+    """The lifecycle, the two portfolios, and what they do to the maatmensen."""
+
+    lifecycle: Lifecycle
+    #: Calendar year of projection year 0.
+    basisjaar: int
+    portefeuilles: tuple
+    #: Allocation per age, columns ``rendement`` and ``bescherming``.
+    allocation: pd.DataFrame
+    #: Realised return statistics per portfolio, index = portfolio key.
+    returns: pd.DataFrame
+    #: One entry per maatmens, in the order they were supplied.
+    people: list = field(default_factory=list)        # [MaatmensMetrics]
+    #: Horizons (years) at which wealth is reported.
+    horizons: list = field(default_factory=list)
+
+
+@dataclass
 class ScenarioMetrics:
     """Everything the HTML report needs about one scenario set."""
 
@@ -165,6 +212,7 @@ class ScenarioMetrics:
     liability: pd.DataFrame = field(default_factory=pd.DataFrame)
     correlations: pd.DataFrame = field(default_factory=pd.DataFrame)
     kpis: dict = field(default_factory=dict)          # {key: Kpi}
+    lifecycle: Optional[LifecycleMetrics] = None
     generated_at: str = ""
 
     def kpi(self, key: str) -> Optional[Kpi]:
@@ -319,6 +367,104 @@ def _series_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Lifecycle and maatmensen
+# ---------------------------------------------------------------------------
+
+
+def _basisjaar_from_label(label: str | None) -> int:
+    """Read the calendar year out of a set label like ``2026Q3``."""
+    match = re.search(r"(20\d{2})", label or "")
+    return int(match.group(1)) if match else _dt.date.today().year
+
+
+def _lifecycle_metrics(
+    scenario_set,
+    states: np.ndarray,
+    maatmensen: Sequence[Maatmens],
+    lifecycle: Lifecycle,
+    portefeuilles: tuple[Portefeuille, Portefeuille],
+    horizons: Sequence[int],
+    basisjaar: int,
+    percentiles: list[float],
+) -> Optional[LifecycleMetrics]:
+    """Run every maatmens through the lifecycle and reduce to percentiles."""
+    if not maatmensen:
+        return None
+
+    n_years = scenario_set.get("equity_return").shape[1]
+    # Rolling the bond leg needs the curve one year past the last return year.
+    max_horizon = min(n_years, states.shape[2] - 1)
+    horizons = sorted({h for h in horizons if 1 <= h <= max_horizon})
+    if not horizons:
+        return None
+    horizon = horizons[-1]
+
+    # Both portfolios are the same for every maatmens, so price them once.
+    returns = tuple(
+        portefeuille_returns(scenario_set, portefeuille, horizon, states=states)
+        for portefeuille in portefeuilles
+    )
+
+    return_rows = {}
+    for portefeuille, matrix in zip(portefeuilles, returns):
+        log_growth = np.log1p(matrix)
+        return_rows[portefeuille.key] = {
+            "label": portefeuille.label,
+            "samenstelling": portefeuille.description(),
+            "gemiddelde": float(matrix.mean()),
+            "volatiliteit": float(matrix.std(ddof=1)),
+            "meetkundig": float(np.expm1(log_growth.mean())),
+            "p5": float(np.percentile(matrix, 5.0)),
+            "p95": float(np.percentile(matrix, 95.0)),
+        }
+        del log_growth
+
+    people = []
+    for maatmens in maatmensen:
+        projection = project_wealth(
+            scenario_set,
+            maatmens,
+            lifecycle=lifecycle,
+            portefeuilles=portefeuilles,
+            horizon=horizon,
+            basisjaar=basisjaar,
+            states=states,
+            returns=returns,
+        )
+        people.append(
+            MaatmensMetrics(
+                maatmens=maatmens,
+                schedule=projection.schedule,
+                paths=projection.percentiles(percentiles),
+                horizons={
+                    h: analysis.distribution_stats(projection.at(h), percentiles)
+                    for h in horizons
+                },
+                startleeftijd=maatmens.leeftijd(basisjaar),
+            )
+        )
+        del projection
+
+    del returns
+
+    # Tabulate the schedule over the ages the maatmensen actually pass through,
+    # padded to the anchor range so the curve reads as a whole.
+    ages = [person.startleeftijd for person in people]
+    lo = min(int(lifecycle.anchor_ages[0]), min(ages))
+    hi = max(int(lifecycle.anchor_ages[-1]), max(ages) + horizon)
+
+    return LifecycleMetrics(
+        lifecycle=lifecycle,
+        basisjaar=basisjaar,
+        portefeuilles=tuple(portefeuilles),
+        allocation=lifecycle.allocation(range(lo, hi + 1)),
+        returns=pd.DataFrame(return_rows).T.rename_axis("portefeuille"),
+        people=people,
+        horizons=list(horizons),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -332,6 +478,11 @@ def compute_metrics(
     key_maturities: list[int] | None = None,
     percentiles: list[float] | None = None,
     reference: Optional[ScenarioMetrics] = None,
+    maatmensen: Sequence[Maatmens] | None = None,
+    lifecycle: Lifecycle | None = None,
+    portefeuilles: tuple[Portefeuille, Portefeuille] | None = None,
+    wealth_horizons: list[int] | None = None,
+    basisjaar: int | None = None,
 ) -> ScenarioMetrics:
     """Reduce a :class:`~dnb_p_set.ScenarioSet` to a report metrics bundle.
 
@@ -357,6 +508,20 @@ def compute_metrics(
         Another bundle whose histogram bin edges should be reused, so the two
         sets can be overlaid on identical bins.  Pass the *current* set's
         bundle when computing the *previous* set.
+    maatmensen:
+        Participants to project through the lifecycle.  Defaults to
+        :data:`~dnb_p_set.lifecycle.DEFAULT_MAATMENSEN`; pass an empty
+        sequence to skip the lifecycle section entirely.
+    lifecycle:
+        Allocation schedule; defaults to
+        :data:`~dnb_p_set.lifecycle.DEFAULT_LIFECYCLE`.
+    portefeuilles:
+        ``(rendementsportefeuille, beschermingsportefeuille)``; defaults to
+        :data:`~dnb_p_set.lifecycle.DEFAULT_PORTEFEUILLES`.
+    wealth_horizons:
+        Horizons (years) at which projected wealth is reported.
+    basisjaar:
+        Calendar year of projection year 0.  Read from *label* when omitted.
 
     Returns
     -------
@@ -367,6 +532,10 @@ def compute_metrics(
     return_horizons = return_horizons or RETURN_HORIZONS
     key_maturities = key_maturities or KEY_MATURITIES
     percentiles = percentiles or DEFAULT_PERCENTILES
+    lifecycle = lifecycle or DEFAULT_LIFECYCLE
+    portefeuilles = portefeuilles or DEFAULT_PORTEFEUILLES
+    wealth_horizons = wealth_horizons or WEALTH_HORIZONS
+    maatmensen = DEFAULT_MAATMENSEN if maatmensen is None else maatmensen
 
     source = str(scenario_set.source_path or "in-memory")
     if label is None:
@@ -443,6 +612,19 @@ def compute_metrics(
     # -- correlations ------------------------------------------------------
     logger.info("[%s] correlations", label)
     bundle.correlations = _correlation_frame(scenario_set, states)
+
+    # -- lifecycle and maatmensen -----------------------------------------
+    logger.info("[%s] lifecycle projection", label)
+    bundle.lifecycle = _lifecycle_metrics(
+        scenario_set,
+        states,
+        maatmensen=maatmensen,
+        lifecycle=lifecycle,
+        portefeuilles=portefeuilles,
+        horizons=wealth_horizons,
+        basisjaar=basisjaar if basisjaar is not None else _basisjaar_from_label(label),
+        percentiles=percentiles,
+    )
 
     # -- headline figures --------------------------------------------------
     _build_kpis(bundle)

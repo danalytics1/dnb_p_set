@@ -189,6 +189,12 @@ def _fmt_count(value: int) -> str:
     return _dutch(f"{int(value):,}")
 
 
+def _fmt_euro(value: float, decimals: int = 0) -> str:
+    if value is None or not np.isfinite(value):
+        return "–"
+    return "€ " + _dutch(f"{value:,.{decimals}f}")
+
+
 def _fmt_value(value: float, unit: str) -> str:
     if unit == "rate":
         return _fmt_rate(value)
@@ -786,6 +792,217 @@ def _correlation_section(
     )
 
 
+def _maatmens_table(bundle) -> str:
+    """The parameters every maatmens was projected with."""
+    headers = [
+        "Maatmens", "Geboortejaar", "Leeftijd op t=0", "Vermogen op t=0",
+        "Pensioengevend salaris", "Franchise", "Premie", "Pensioenleeftijd",
+        "Start-allocatie rendement",
+    ]
+    rows = []
+    for person in bundle.people:
+        mens = person.maatmens
+        weight = float(bundle.lifecycle.rendement_weight(person.startleeftijd))
+        rows.append(
+            [
+                escape(mens.naam),
+                str(mens.geboortejaar),
+                f"{person.startleeftijd} jr",
+                _fmt_euro(mens.pensioenvermogen),
+                _fmt_euro(mens.pensioengevend_salaris),
+                _fmt_euro(mens.franchise),
+                f"{_fmt_euro(mens.jaarpremie)} ({_fmt_rate(mens.premiepercentage, 0)} "
+                "van de grondslag)",
+                f"{mens.pensioenleeftijd} jr",
+                _fmt_rate(weight, 1),
+            ]
+        )
+    return _table(rows, headers)
+
+
+def _portefeuille_table(bundle) -> str:
+    """Composition and realised statistics of the two portfolios."""
+    headers = [
+        "Portefeuille", "Samenstelling", "Rekenkundig gemiddelde",
+        "Meetkundig gemiddelde", "Volatiliteit", "p5", "p95",
+    ]
+    rows = []
+    for portefeuille in bundle.portefeuilles:
+        if portefeuille.key not in bundle.returns.index:
+            continue
+        record = bundle.returns.loc[portefeuille.key]
+        rows.append(
+            [
+                escape(str(record["label"])),
+                escape(str(record["samenstelling"])),
+                _fmt_rate(float(record["gemiddelde"])),
+                _fmt_rate(float(record["meetkundig"])),
+                _fmt_rate(float(record["volatiliteit"])),
+                _fmt_rate(float(record["p5"])),
+                _fmt_rate(float(record["p95"])),
+            ]
+        )
+    return _table(rows, headers)
+
+
+def _allocation_table(bundle) -> str:
+    """Allocation per age, thinned to every fifth year plus the anchor ages."""
+    frame = bundle.allocation
+    anchors = {age for age, _ in bundle.lifecycle.anchors}
+    ages = [
+        age for age in frame.index
+        if age % 5 == 0 or age in anchors or age == frame.index[-1]
+    ]
+    rows = [
+        [
+            f"{age} jr",
+            _fmt_rate(float(frame.loc[age, "rendement"]), 1),
+            _fmt_rate(float(frame.loc[age, "bescherming"]), 1),
+        ]
+        for age in ages
+    ]
+    return _table(rows, ["Leeftijd", "Rendementsportefeuille", "Beschermingsportefeuille"])
+
+
+def _wealth_path_table(bundle) -> str:
+    """Percentiles of the capital per projection year, per maatmens."""
+    parts = []
+    for person in bundle.people:
+        frame = person.paths
+        rows = [
+            [
+                f"jaar {int(year)} ({int(record['leeftijd'])} jr)",
+                _fmt_euro(record["mean"]),
+                _fmt_euro(record["p5"]),
+                _fmt_euro(record["p25"]),
+                _fmt_euro(record["p50"]),
+                _fmt_euro(record["p75"]),
+                _fmt_euro(record["p95"]),
+            ]
+            for year, record in frame.iterrows()
+        ]
+        parts.append(
+            f"<h4 style='font-size:13px;color:#52514e;margin:14px 0 0'>"
+            f"{escape(person.maatmens.naam)}</h4>"
+            + _table(
+                rows,
+                ["Projectiejaar", "Gemiddelde", "p5", "p25", "Mediaan", "p75", "p95"],
+            )
+        )
+    return "".join(parts)
+
+
+def _wealth_horizon_table(bundle) -> str:
+    """Capital at each reported horizon, per maatmens."""
+    headers = [
+        "Maatmens", "Horizon", "Leeftijd", "Gemiddelde", "p5", "p25",
+        "Mediaan", "p75", "p95", "Totale inleg (gemiddeld)",
+    ]
+    rows = []
+    for person in bundle.people:
+        mens = person.maatmens
+        for horizon in bundle.horizons:
+            record = person.horizons.get(horizon)
+            if record is None:
+                continue
+            schedule = person.schedule.iloc[:horizon]
+            inleg = mens.pensioenvermogen + float(schedule["premie"].sum())
+            rows.append(
+                [
+                    escape(mens.naam),
+                    f"{horizon} jr",
+                    f"{person.startleeftijd + horizon} jr",
+                    _fmt_euro(record["mean"]),
+                    _fmt_euro(record["p5"]),
+                    _fmt_euro(record["p25"]),
+                    _fmt_euro(record["p50"]),
+                    _fmt_euro(record["p75"]),
+                    _fmt_euro(record["p95"]),
+                    _fmt_euro(inleg),
+                ]
+            )
+    return _table(rows, headers)
+
+
+def _lifecycle_section(current: ScenarioMetrics) -> str:
+    """Lifecycle, maatmensen and their projected wealth.
+
+    Built only from *current*: the projection is a modelling exercise on top
+    of one set, and overlaying a second set would say more about the model
+    than about the difference between the quarters.
+    """
+    bundle = current.lifecycle
+    if bundle is None or not bundle.people:
+        return ""
+
+    rendement, bescherming = bundle.portefeuilles[0], bundle.portefeuilles[1]
+    horizons = ", ".join(f"{h} jaar" for h in bundle.horizons)
+
+    body = [
+        '<section id="maatmens">',
+        "<h2>Maatmens en lifecycle</h2>",
+        '<p class="lede">Wat de set voor een deelnemer betekent, hangt af van hoe '
+        "die belegt. Hieronder wordt het vermogen van een aantal maatmensen "
+        f"doorgerekend over {escape(horizons)}, met projectiejaar 0 in "
+        f"{bundle.basisjaar}. Het vermogen wordt verdeeld over een "
+        "<b>rendementsportefeuille</b> en een <b>beschermingsportefeuille</b>, "
+        "die beide hun rendement uit deze scenarioset halen; de lifecycle bepaalt "
+        "per leeftijd de verdeling.</p>",
+        '<p class="note">Dit zijn modelaannames, geen DNB-voorschriften. De set '
+        "levert alleen de rendementen. Per projectiejaar geldt "
+        "<code>V(t+1) = (V(t) + premie(t)) · (1 + w·r_rendement + (1−w)·r_bescherming)</code>: "
+        "de premie van een jaar wordt aan het begin van dat jaar ingelegd en "
+        "deelt in het rendement van datzelfde jaar. Het salaris — en daarmee de "
+        "premie — groeit mee met de gesimuleerde Nederlandse prijsinflatie. "
+        "Premie-inleg stopt op de pensioenleeftijd.</p>",
+        "<h3>Portefeuilles</h3>",
+        _portefeuille_table(bundle),
+        '<p class="note">De rendementsportefeuille volgt het gesimuleerde '
+        f"aandelenrendement. De beschermingsportefeuille is een zerocouponobligatie "
+        f"van {bescherming.bond_maturity} jaar die elk jaar wordt teruggerold naar "
+        "die looptijd; het rendement volgt uit de nominale curve als "
+        "<code>P(m−1, t+1) / P(m, t) − 1</code>. Die portefeuille wint dus juist "
+        "waarde als de rente daalt — precies wanneer pensioen inkopen duurder "
+        "wordt.</p>",
+        "<h3>Lifecycle</h3>",
+        _figure(
+            charts.lifecycle_allocation(current),
+            f"{escape(bundle.lifecycle.label)}: het aandeel in de "
+            "rendementsportefeuille per leeftijd, met de rest in bescherming. "
+            "De stippellijnen markeren de leeftijd van elke maatmens op t=0.",
+            _allocation_table(bundle),
+            "Toon allocatie per leeftijd",
+        ),
+        "<h3>Maatmensen</h3>",
+        _maatmens_table(bundle),
+        "<h3>Doorrekening van het vermogen</h3>",
+        _figure(
+            charts.maatmens_wealth_fan(current),
+            "Ontwikkeling van het pensioenvermogen per maatmens over alle "
+            f"{_fmt_count(current.n_scenarios)} scenario's. De banden zijn de "
+            "5–95, 10–90 en 25–75 percentielintervallen. Elk paneel heeft een "
+            "eigen schaal.",
+            _wealth_path_table(bundle),
+            "Toon vermogens per projectiejaar",
+        ),
+        _figure(
+            charts.maatmens_horizon_boxes(current),
+            f"Het vermogen na {escape(horizons)}. Box toont p25–p75 en mediaan, "
+            "whiskers p5–p95, stip het gemiddelde. De verticale as is "
+            "logaritmisch omdat de bedragen twee ordes van grootte uiteenlopen.",
+            _wealth_horizon_table(bundle),
+            "Toon vermogens per horizon",
+        ),
+        '<p class="note">De spreiding groeit met de horizon in euro\'s, maar de '
+        "geannualiseerde spreiding krimpt — hetzelfde effect dat in de "
+        "rendementsfan zichtbaar is. Voor de oudste maatmens dempt de lifecycle "
+        "die spreiding bovendien actief, doordat het gewicht in de "
+        f"{escape(rendement.label.lower())} met de leeftijd afloopt.</p>",
+        "</section>",
+    ]
+    return "".join(body)
+
+
 def _colophon(current: ScenarioMetrics, previous: ScenarioMetrics | None) -> str:
     lines = [
         "<footer class='colophon'>",
@@ -894,6 +1111,11 @@ def build_html_report(
     if correlations:
         sections.append(("correlaties", "Samenhang"))
         body.append(correlations)
+
+    lifecycle = _lifecycle_section(current)
+    if lifecycle:
+        sections.append(("maatmens", "Maatmens en lifecycle"))
+        body.append(lifecycle)
 
     return (
         "<!DOCTYPE html>\n<html lang='nl'>\n<head>\n"

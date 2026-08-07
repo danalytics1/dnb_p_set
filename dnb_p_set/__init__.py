@@ -28,6 +28,8 @@ from . import analysis
 from . import charts
 from . import curves
 from . import plotting
+from . import lifecycle
+from .lifecycle import Lifecycle, Maatmens, Portefeuille, project_wealth
 from .metrics import ScenarioMetrics, compute_metrics
 from .reporting import build_html_report
 
@@ -44,6 +46,11 @@ __all__ = [
     "charts",
     "curves",
     "plotting",
+    "lifecycle",
+    "Lifecycle",
+    "Maatmens",
+    "Portefeuille",
+    "project_wealth",
     "ScenarioMetrics",
     "compute_metrics",
     "build_html_report",
