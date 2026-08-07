@@ -7,6 +7,7 @@ import pytest
 
 from dnb_p_set import ScenarioSet, build_html_report, compute_metrics
 from dnb_p_set.constants import RETURN_HORIZONS
+from dnb_p_set.lifecycle import DEFAULT_MAATMENSEN
 from dnb_p_set.metrics import ScenarioMetrics
 
 N_SCEN = 300
@@ -147,6 +148,45 @@ class TestDerivedFrames:
         np.testing.assert_allclose(np.diag(matrix.to_numpy()), 1.0)
 
 
+class TestLifecycleMetrics:
+    def test_bundle_is_present(self, current):
+        assert current.lifecycle is not None
+
+    def test_basisjaar_is_read_from_the_label(self, current):
+        assert current.lifecycle.basisjaar == 2026
+
+    def test_one_entry_per_maatmens(self, current):
+        assert len(current.lifecycle.people) == len(DEFAULT_MAATMENSEN)
+
+    def test_horizons_are_capped_by_the_projection(self, current):
+        assert max(current.lifecycle.horizons) <= N_Y
+
+    def test_every_person_covers_every_horizon(self, current):
+        for person in current.lifecycle.people:
+            assert set(person.horizons) == set(current.lifecycle.horizons)
+
+    def test_allocation_spans_every_starting_age(self, current):
+        allocation = current.lifecycle.allocation
+        for person in current.lifecycle.people:
+            assert person.startleeftijd in allocation.index
+
+    def test_protection_earns_less_than_return_portfolio(self, current):
+        returns = current.lifecycle.returns
+        assert returns.loc["bescherming", "meetkundig"] < returns.loc[
+            "rendement", "meetkundig"
+        ]
+
+    def test_wealth_starts_at_the_opening_capital(self, current):
+        for person in current.lifecycle.people:
+            assert person.paths.loc[0, "p50"] == pytest.approx(
+                person.maatmens.pensioenvermogen
+            )
+
+    def test_empty_maatmensen_skips_the_bundle(self):
+        bundle = compute_metrics(make_set(5, label="leeg"), maatmensen=[])
+        assert bundle.lifecycle is None
+
+
 class TestKpis:
     def test_kpis_exist(self, current):
         assert current.kpis
@@ -213,9 +253,27 @@ class TestReport:
     def test_every_section_is_present(self, comparison_html):
         for anchor in (
             "kern", "rente", "aandelen", "inflatie-nl", "inflatie-eu",
-            "verplichtingen", "correlaties",
+            "verplichtingen", "correlaties", "maatmens",
         ):
             assert f'id="{anchor}"' in comparison_html
+
+    def test_lifecycle_section_names_every_maatmens(self, comparison_html):
+        for mens in DEFAULT_MAATMENSEN:
+            assert mens.naam in comparison_html
+
+    def test_lifecycle_section_reports_every_horizon(self, comparison_html):
+        section = comparison_html[comparison_html.index('id="maatmens"'):]
+        for horizon in (1, 10, 20):
+            assert f"{horizon} jaar" in section
+            assert f"<td>{horizon} jr</td>" in section
+
+    def test_lifecycle_section_shows_euro_amounts(self, comparison_html):
+        assert "€ " in comparison_html
+
+    def test_lifecycle_section_is_last(self, comparison_html):
+        assert comparison_html.index('id="maatmens"') > comparison_html.index(
+            'id="correlaties"'
+        )
 
     def test_lockstep_pairs_are_flagged(self, comparison_html):
         # The fixture's psi is proportional to the maturity, so every point on

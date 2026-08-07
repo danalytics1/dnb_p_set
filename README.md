@@ -199,6 +199,80 @@ corr = analysis.correlation_matrix(
 )
 ```
 
+### Maatmens en lifecycle
+
+`dnb_p_set.lifecycle` turns the simulated returns into the pension capital of a
+stylised participant (a *maatmens*).  The capital is split over two portfolios,
+both driven by the set:
+
+| Portefeuille | Exposure |
+|---|---|
+| **Rendementsportefeuille** | the simulated equity return |
+| **Beschermingsportefeuille** | a constant-maturity zero-coupon bond priced off the affine term structure |
+
+A `Lifecycle` sets the split per age.  Projection year *t* runs
+`V(t+1) = (V(t) + premie(t)) · (1 + w·r_rendement + (1−w)·r_bescherming)`: the
+contribution for a year is paid at the start of it and earns that year's
+return, and `w` is read off the lifecycle at the age reached at the start of
+the year.
+
+> These are modelling assumptions, not DNB prescriptions — the set only
+> supplies the returns.
+
+```python
+from dnb_p_set import ScenarioSet
+from dnb_p_set.lifecycle import (
+    DEFAULT_LIFECYCLE, DEFAULT_MAATMENSEN, Lifecycle, Maatmens, project_wealth,
+)
+
+ss = ScenarioSet.from_csv("import/CP2022 P scenarioset 100K 2026Q3.csv")
+
+mens = Maatmens(
+    naam="Starter",
+    geboortejaar=2001,
+    pensioenvermogen=5_000,
+    pensioengevend_salaris=34_000,
+    premiepercentage=0.30,       # of the salary above the franchise
+    franchise=18_000,
+    pensioenleeftijd=68,
+)
+
+projection = project_wealth(ss, mens, DEFAULT_LIFECYCLE, horizon=20, basisjaar=2026)
+projection.percentiles().loc[[1, 10, 20]]   # capital after 1, 10 and 20 years
+projection.at(20)                            # raw cross-section, one per scenario
+projection.schedule                          # age, weights and premium per year
+```
+
+Define your own lifecycle from anchor points; weights are linearly
+interpolated between them and flat outside:
+
+```python
+eigen = Lifecycle(
+    key="defensief",
+    label="Defensieve lifecycle",
+    anchors=((25, 0.80), (45, 0.65), (60, 0.40), (68, 0.25)),
+)
+eigen.allocation()               # rendement / bescherming per age
+eigen.rendement_weight(52)       # 0.5333…
+```
+
+The two portfolio definitions are themselves configurable:
+
+```python
+from dnb_p_set.lifecycle import Portefeuille, portefeuille_returns, bond_returns
+
+mixed = Portefeuille(
+    key="rendement", label="Rendementsportefeuille",
+    equity_weight=0.85, bond_maturity=10, cost=0.0025,
+)
+portefeuille_returns(ss, mixed, n_years=20)   # (n_scenarios, 20) net returns
+bond_returns(ss, maturity=30, n_years=20)     # rolled 30-year zero
+```
+
+`compute_metrics` runs the whole thing for the report and accepts
+`maatmensen`, `lifecycle`, `portefeuilles`, `wealth_horizons` and `basisjaar`;
+pass `maatmensen=[]` to leave the section out.
+
 ### Plotting
 
 `dnb_p_set.plotting` holds generic helpers that take raw arrays:
@@ -233,6 +307,11 @@ fig = charts.return_histogram(current, previous, key="equity", horizon=20)
 fig = charts.annualised_fan(current, previous, key="equity")
 fig = charts.correlation_heatmap(current, previous)
 
+# Lifecycle charts are built from the current set only
+fig = charts.lifecycle_allocation(current)
+fig = charts.maatmens_wealth_fan(current)
+fig = charts.maatmens_horizon_boxes(current)
+
 uri = charts.figure_to_data_uri(fig)   # inline into HTML
 ```
 
@@ -251,6 +330,7 @@ alongside it) covering:
 | **Prijsinflatie NL & EU** | The same treatment for both inflation blocks |
 | **Verplichtingenproxy** | Present value and Macaulay duration of a flat 60-year cashflow on the nominal curve — turns a curve shift into a value |
 | **Samenhang** | Year-1 correlation matrix plus its change; automatically flags variable pairs that move in lockstep |
+| **Maatmens en lifecycle** | Allocation per age over the return and protection portfolios; the parameters of a handful of maatmensen; their projected capital over the whole horizon and at 1, 10 and 20 years |
 
 Every chart carries the table it was drawn from in a collapsible block.
 
@@ -342,8 +422,9 @@ behaviour:
   `exp(Σ r)`. Pass `log_returns=True` for the old behaviour.
 
 New: `dnb_p_set.curves` (term-structure maths), `dnb_p_set.metrics` (report
-metrics bundles), `dnb_p_set.charts` (report charts), a single-pass CSV loader,
-and a rebuilt HTML report.
+metrics bundles), `dnb_p_set.charts` (report charts), `dnb_p_set.lifecycle`
+(maatmens wealth projection), a single-pass CSV loader, and a rebuilt HTML
+report.
 
 ---
 

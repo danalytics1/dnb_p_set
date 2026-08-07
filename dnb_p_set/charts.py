@@ -32,6 +32,9 @@ __all__ = [
     "annual_moments",
     "correlation_heatmap",
     "headline_boxplots",
+    "lifecycle_allocation",
+    "maatmens_wealth_fan",
+    "maatmens_horizon_boxes",
 ]
 
 #: Validated palette (see the project data-viz notes).  Slot 1 is the current
@@ -99,6 +102,16 @@ def _as_percent(ax, axis: str = "y", decimals: int = 1) -> None:
 
     fmt = FuncFormatter(lambda v, _: f"{v * 100:.{decimals}f}%")
     (ax.yaxis if axis == "y" else ax.xaxis).set_major_formatter(fmt)
+
+
+def _as_euro(ax, axis: str = "y") -> None:
+    """Format an axis as euro amounts with Dutch thousands separators."""
+    from matplotlib.ticker import FuncFormatter
+
+    def _fmt(value, _pos):
+        return "€" + f"{value:,.0f}".replace(",", ".")
+
+    (ax.yaxis if axis == "y" else ax.xaxis).set_major_formatter(FuncFormatter(_fmt))
 
 
 def _legend(ax, **kwargs) -> None:
@@ -871,4 +884,244 @@ def headline_boxplots(current):
         loc="left",
         pad=8,
     )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle and maatmensen
+# ---------------------------------------------------------------------------
+
+#: Colour per maatmens, cycled when more people are supplied than colours.
+_PERSON_COLOURS = ["current", "accent", "previous", "negative"]
+
+
+def _person_colour(index: int) -> str:
+    return PALETTE[_PERSON_COLOURS[index % len(_PERSON_COLOURS)]]
+
+
+def _require_lifecycle(current):
+    bundle = getattr(current, "lifecycle", None)
+    if bundle is None or not bundle.people:
+        raise ValueError("the metrics bundle holds no lifecycle projection")
+    return bundle
+
+
+def lifecycle_allocation(current):
+    """Allocation to both portfolios per age, with the maatmensen marked.
+
+    The two weights sum to 1 by construction, so a stacked area shows both
+    the split and the moment de-risking starts in one read.
+    """
+    plt = _plt()
+    bundle = _require_lifecycle(current)
+    frame = bundle.allocation
+    ages = frame.index.to_numpy(dtype=float)
+
+    fig, ax = _new_figure(plt, (9.5, 4.4))
+    ax.stackplot(
+        ages,
+        frame["rendement"].to_numpy(),
+        frame["bescherming"].to_numpy(),
+        colors=[PALETTE["current"], PALETTE["accent"]],
+        alpha=0.85,
+        lw=0,
+        labels=["Rendementsportefeuille", "Beschermingsportefeuille"],
+        zorder=2,
+    )
+    ax.plot(
+        ages, frame["rendement"].to_numpy(), color=PALETTE["ink"], lw=1.2, zorder=4
+    )
+
+    # Each maatmens is marked on the boundary line rather than above the axes,
+    # so an arbitrarily long name never collides with the title.
+    for person in bundle.people:
+        age = person.startleeftijd
+        weight = float(bundle.lifecycle.rendement_weight(age))
+        ax.axvline(age, color=PALETTE["ink"], lw=1.0, ls=":", zorder=5)
+        ax.plot(
+            age, weight, marker="o", ms=6, color=PALETTE["ink"],
+            mfc=PALETTE["surface"], mew=1.6, zorder=6,
+        )
+        ax.annotate(
+            f"{person.maatmens.naam} ({age} jr)",
+            xy=(age, weight),
+            xytext=(7, -13),
+            textcoords="offset points",
+            fontsize=8.5,
+            color=PALETTE["ink"],
+            zorder=7,
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "facecolor": PALETTE["surface"],
+                "edgecolor": PALETTE["grid"],
+                "linewidth": 0.7,
+                "alpha": 0.92,
+            },
+        )
+
+    ax.set_xlim(ages.min(), ages.max())
+    ax.set_ylim(0, 1)
+    _style_axes(
+        ax,
+        xlabel="Leeftijd",
+        ylabel="Aandeel in het vermogen",
+        title=f"{bundle.lifecycle.label} — allocatie per leeftijd",
+    )
+    _as_percent(ax, decimals=0)
+    _legend(ax, loc="lower left", ncol=2)
+    fig.tight_layout()
+    return fig
+
+
+def maatmens_wealth_fan(current):
+    """Percentile fan of the projected capital, one panel per maatmens.
+
+    Each panel keeps its own y-axis: the three maatmensen differ by an order
+    of magnitude in starting capital, and a shared axis would flatten the
+    youngest into the baseline.
+    """
+    plt = _plt()
+    from matplotlib.ticker import MaxNLocator
+
+    bundle = _require_lifecycle(current)
+    people = bundle.people
+
+    ncols = min(3, len(people))
+    nrows = int(np.ceil(len(people) / ncols))
+    fig, axes = _new_figure(
+        plt, (4.6 * ncols, 3.6 * nrows), nrows=nrows, ncols=ncols, squeeze=False
+    )
+    flat = axes.ravel()
+
+    for ax, person in zip(flat, people):
+        frame = person.paths
+        x = frame.index.to_numpy()
+        _draw_fan(ax, x, frame)
+        ax.plot(
+            x,
+            frame["mean"].to_numpy(),
+            color=PALETTE["ink"],
+            lw=1.2,
+            ls=":",
+            zorder=5,
+            label="gemiddelde",
+        )
+        _style_axes(
+            ax,
+            xlabel="Projectiejaar",
+            ylabel="Pensioenvermogen",
+            title=f"{person.maatmens.naam} — {person.startleeftijd} jaar op t=0",
+        )
+        _as_euro(ax)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    for ax in flat[len(people):]:
+        ax.set_visible(False)
+
+    handles, labels = flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        frameon=False,
+        fontsize=8.5,
+        labelcolor=PALETTE["secondary"],
+        loc="lower center",
+        ncol=min(6, len(labels)),
+        bbox_to_anchor=(0.5, -0.04),
+    )
+    fig.suptitle(
+        "Pensioenvermogen over de tijd per maatmens",
+        color=PALETTE["ink"],
+        fontsize=12,
+        x=0.02,
+        ha="left",
+    )
+    fig.tight_layout(rect=(0, 0.02, 1, 0.94))
+    return fig
+
+
+def maatmens_horizon_boxes(current):
+    """Capital per maatmens at each reported horizon, as box plots.
+
+    Boxes come from the stored percentiles, so the whiskers are p5/p95 rather
+    than the usual 1.5×IQR rule and there are no outlier points.  The y-axis
+    is logarithmic: a starter's capital after one year and a near-retiree's
+    after twenty differ by two orders of magnitude.
+    """
+    plt = _plt()
+    bundle = _require_lifecycle(current)
+    people, horizons = bundle.people, bundle.horizons
+
+    fig, ax = _new_figure(plt, (9.5, 4.8))
+    n_people = len(people)
+    width = 0.8 / n_people
+    handles = []
+
+    for i, person in enumerate(people):
+        colour = _person_colour(i)
+        offset = (i - (n_people - 1) / 2) * width
+        stats, positions = [], []
+        for j, horizon in enumerate(horizons):
+            record = person.horizons.get(horizon)
+            if record is None:
+                continue
+            stats.append(
+                {
+                    "label": "",
+                    "whislo": record["p5"],
+                    "q1": record["p25"],
+                    "med": record["p50"],
+                    "q3": record["p75"],
+                    "whishi": record["p95"],
+                    "mean": record["mean"],
+                    "fliers": [],
+                }
+            )
+            positions.append(j + 1 + offset)
+        if not stats:
+            continue
+
+        box = ax.bxp(
+            stats,
+            positions=positions,
+            widths=width * 0.8,
+            showmeans=True,
+            meanline=False,
+            patch_artist=True,
+            manage_ticks=False,
+            zorder=3,
+        )
+        for patch in box["boxes"]:
+            patch.set_facecolor(colour)
+            patch.set_alpha(0.35)
+            patch.set_edgecolor(colour)
+            patch.set_linewidth(1.3)
+        for element in ("whiskers", "caps"):
+            for line in box[element]:
+                line.set_color(colour)
+                line.set_linewidth(1.2)
+        for line in box["medians"]:
+            line.set_color(PALETTE["ink"])
+            line.set_linewidth(1.6)
+        for mean in box["means"]:
+            mean.set_markerfacecolor(PALETTE["ink"])
+            mean.set_markeredgecolor(PALETTE["ink"])
+        handles.append(
+            plt.Line2D([], [], color=colour, lw=6, alpha=0.55, label=person.maatmens.naam)
+        )
+
+    ax.set_yscale("log")
+    ax.set_xticks(range(1, len(horizons) + 1))
+    ax.set_xticklabels([f"na {h} jaar" for h in horizons], fontsize=9)
+    ax.set_xlim(0.5, len(horizons) + 0.5)
+    _style_axes(
+        ax,
+        ylabel="Pensioenvermogen (log-schaal)",
+        title="Doorgerekend vermogen per horizon",
+    )
+    _as_euro(ax)
+    from matplotlib.ticker import NullFormatter
+
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    _legend(ax, handles=handles, loc="upper left", ncol=min(3, len(handles)))
     return fig

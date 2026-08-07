@@ -215,3 +215,29 @@ LIABILITY_HORIZON: int = 60
 
 # Annual cost load DNB applies to convert gross to net returns (20 bp)
 COST_LOAD: float = 0.0020
+
+# ---------------------------------------------------------------------------
+# Lifecycle / maatmens defaults
+# ---------------------------------------------------------------------------
+#
+# These are modelling assumptions, not figures published by DNB.  They give
+# :mod:`dnb_p_set.lifecycle` a sensible out-of-the-box configuration; override
+# them with the parameters of the scheme you are actually looking at.
+
+# Horizons (years) at which projected wealth is reported
+WEALTH_HORIZONS: list[int] = [1, 10, 20]
+
+# Maturity (years) of the zero-coupon bond leg in the protection portfolio.
+# Long enough to behave like an interest-rate hedge for the conversion of
+# capital into pension.
+PROTECTION_MATURITY: int = 20
+
+# Retirement age at which contributions stop
+DEFAULT_PENSIOENLEEFTIJD: int = 68
+
+# Total annual contribution as a fraction of the pensioengrondslag
+DEFAULT_PREMIE_PERCENTAGE: float = 0.30
+
+# Salary offset (franchise) not covered by pension accrual.  A rounded
+# stand-in for the AOW franchise; set it to the scheme's own figure.
+DEFAULT_FRANCHISE: float = 18_000.0
