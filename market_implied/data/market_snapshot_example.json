@@ -1,0 +1,151 @@
+{
+  "_disclaimer": "VOORBEELDBESTAND. De cijfers hieronder zijn plausibele, illustratieve waarden en GEEN werkelijk waargenomen marktdata. Vervang dit bestand door een echte marktopname voordat de uitkomsten ergens voor gebruikt worden. Elk veld heeft een bron; zie market_implied/docs/methodology.md, paragraaf 'Databronnen'.",
+  "as_of": "2026-06-30",
+  "base_currency": "EUR",
+  "version": "example-1",
+  "sources": {
+    "curves": "Bloomberg / Refinitiv zero curves; EUR nominaal = EURIBOR/ESTR swapcurve, EUR reeel = HICPxT inflatieswaps; USD nominaal = SOFR swapcurve, USD reeel = TIPS-curve (Guerkaynak, Sack & Wright, 2010).",
+    "term_premia": "ACM-decompositie (Adrian, Crump & Moench, 2013), gepubliceerd door de Federal Reserve Bank of New York; EUR-equivalent uit ECB-schattingen.",
+    "inflation_risk_premia": "Grishchenko & Huang (2013), D'Amico, Kim & Wei (2018), ECB Survey of Professional Forecasters versus breakevens.",
+    "credit": "ICE BofA / Bloomberg index option-adjusted spreads en durations.",
+    "equity": "MSCI / Bloomberg indexfundamentals; CAPE volgens Shiller-methodiek op 10-jaars reeel gemiddelde winst.",
+    "commodities": "Geannualiseerde helling van de Bloomberg Commodity Index termijncurve.",
+    "real_assets": "MSCI/INREV taxatiegebaseerde netto aanvangsrendementen; EDHECinfra distributieyields."
+  },
+
+  "curves": {
+    "_comment": "Jaarlijks samengestelde zero rates, decimaal.",
+    "EUR_nominal": {
+      "tenors": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+      "zero_rates": [0.0210, 0.0215, 0.0225, 0.0240, 0.0255, 0.0275, 0.0295, 0.0295, 0.0285]
+    },
+    "EUR_real": {
+      "tenors": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+      "zero_rates": [0.0020, 0.0028, 0.0035, 0.0045, 0.0055, 0.0070, 0.0085, 0.0085, 0.0075]
+    },
+    "USD_nominal": {
+      "tenors": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+      "zero_rates": [0.0380, 0.0370, 0.0370, 0.0380, 0.0395, 0.0410, 0.0430, 0.0445, 0.0440]
+    },
+    "USD_real": {
+      "tenors": [1, 2, 3, 5, 7, 10, 15, 20, 30],
+      "zero_rates": [0.0165, 0.0155, 0.0150, 0.0155, 0.0170, 0.0180, 0.0195, 0.0205, 0.0205]
+    }
+  },
+
+  "term_premia": {
+    "_comment": "Yield term premium per looptijd (ACM-stijl). Bepaalt het verschil tussen de zero rate en de verwachte gemiddelde korte rente.",
+    "EUR_nominal": {
+      "tenors": [1, 2, 5, 10, 15, 30],
+      "values": [0.0000, 0.0005, 0.0025, 0.0055, 0.0075, 0.0095]
+    },
+    "USD_nominal": {
+      "tenors": [1, 2, 5, 10, 15, 30],
+      "values": [0.0000, 0.0008, 0.0030, 0.0065, 0.0085, 0.0110]
+    }
+  },
+
+  "inflation_risk_premia": {
+    "_comment": "Inflatierisicopremie in de breakeven. Breakeven minus deze premie = verwachte inflatie.",
+    "EUR": {
+      "tenors": [1, 5, 10, 30],
+      "values": [0.0005, 0.0015, 0.0025, 0.0035]
+    },
+    "USD": {
+      "tenors": [1, 5, 10, 30],
+      "values": [0.0005, 0.0015, 0.0030, 0.0040]
+    }
+  },
+
+  "instruments": {
+    "sovereign": {
+      "emu_aggregate": {
+        "_comment": "Gewogen spread van de EMU-staatsobligatie-index boven de EUR-swapcurve.",
+        "spread": 0.0020,
+        "effective_duration": 7.5
+      }
+    },
+    "credit": {
+      "eur_ig": {
+        "oas": 0.0095,
+        "effective_duration": 4.5,
+        "spread_duration": 4.6,
+        "long_run_oas": 0.0115
+      },
+      "eur_hy": {
+        "oas": 0.0380,
+        "effective_duration": 3.0,
+        "spread_duration": 3.2,
+        "long_run_oas": 0.0460
+      },
+      "emd_hard_currency": {
+        "oas": 0.0320,
+        "effective_duration": 6.3,
+        "spread_duration": 6.3,
+        "long_run_oas": 0.0360
+      },
+      "dutch_mortgages": {
+        "_comment": "Spread boven de EUR-swapcurve op nieuw geproduceerde Nederlandse hypotheken (NHG en niet-NHG gemengd).",
+        "oas": 0.0140,
+        "effective_duration": 8.0,
+        "spread_duration": 8.0,
+        "long_run_oas": 0.0140
+      }
+    },
+    "equity": {
+      "developed": {
+        "_comment": "MSCI World.",
+        "dividend_yield": 0.0190,
+        "net_buyback_yield": 0.0130,
+        "cape": 26.5,
+        "forward_pe": 18.5,
+        "roe": 0.145,
+        "payout_ratio": 0.55
+      },
+      "europe": {
+        "_comment": "MSCI Europe.",
+        "dividend_yield": 0.0320,
+        "net_buyback_yield": 0.0080,
+        "cape": 20.0,
+        "forward_pe": 14.5,
+        "roe": 0.125,
+        "payout_ratio": 0.60
+      },
+      "emerging": {
+        "_comment": "MSCI Emerging Markets.",
+        "dividend_yield": 0.0280,
+        "net_buyback_yield": 0.0010,
+        "cape": 14.5,
+        "forward_pe": 13.0,
+        "roe": 0.120,
+        "payout_ratio": 0.40
+      }
+    },
+    "real_estate": {
+      "listed": {
+        "_comment": "FTSE EPRA Nareit Developed Europe.",
+        "dividend_yield": 0.0420,
+        "net_buyback_yield": -0.0060,
+        "price_to_nav": 0.88
+      },
+      "unlisted_core": {
+        "_comment": "MSCI/INREV Europese kernvastgoedfondsen, netto aanvangsrendement.",
+        "income_yield": 0.0480,
+        "long_run_yield": 0.0520
+      }
+    },
+    "infrastructure": {
+      "core": {
+        "_comment": "EDHECinfra / niet-genoteerde kerninfrastructuur, distributieyield.",
+        "income_yield": 0.0480,
+        "long_run_yield": 0.0480
+      }
+    },
+    "commodities": {
+      "broad": {
+        "_comment": "Bloomberg Commodity Index; rolrendement is de geannualiseerde helling van de termijncurve (negatief = contango).",
+        "roll_yield": -0.0060
+      }
+    }
+  }
+}

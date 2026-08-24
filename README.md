@@ -428,6 +428,36 @@ report.
 
 ---
 
+## Also in this repository: `market_implied`
+
+A **separate, self-contained** package for market-implied expected returns per
+asset class, derived from current market prices rather than from DNB scenario
+sets. It shares no code with `dnb_p_set` in either direction and depends only
+on NumPy and pandas.
+
+Expected returns are built up from blocks, with one shared risk-free rate
+across all asset classes:
+
+```
+Expected return = risk-free rate + risk premium
+High yield      = term premium + spread - expected credit losses - downgrade drag
+Equities        = dividends + buybacks + inflation + real growth + valuation
+```
+
+Horizons are 5 and 15 years. The deliverable is a table of risk premia per
+asset class.
+
+```bash
+python -m market_implied                    # the premium table
+python -m market_implied --format markdown  # full building-block audit trail
+```
+
+See [`market_implied/README.md`](market_implied/README.md) and the
+literature-backed methodology in
+[`market_implied/docs/methodology.md`](market_implied/docs/methodology.md).
+
+---
+
 ## License
 
 [MIT](LICENSE)
