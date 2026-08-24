@@ -1,0 +1,227 @@
+{
+  "name": "Standaard beleggingsuniversum (NL pensioencontext)",
+  "description": "Beleggingscategorieen met per categorie het model en de structurele aannames. Marktprijzen staan in de marktopname; hier staan alleen de aannames uit de literatuur, elk met bronvermelding in market_implied/docs/methodology.md.",
+  "version": "1",
+  "horizons": [5, 15],
+  "risk_free_convention": "rolled_cash",
+  "apply_valuation": true,
+
+  "asset_classes": [
+    {
+      "key": "cash_eur",
+      "name": "Liquiditeiten (EUR)",
+      "category": "Vastrentend",
+      "model": "cash",
+      "currency": "EUR",
+      "volatility": 0.005,
+      "params": {}
+    },
+    {
+      "key": "govt_emu",
+      "name": "Staatsobligaties EMU",
+      "category": "Vastrentend",
+      "model": "nominal_bond",
+      "currency": "EUR",
+      "volatility": 0.050,
+      "params": {
+        "duration": 7.5,
+        "spread_source": "sovereign.emu_aggregate",
+        "expected_credit_loss": 0.0002
+      }
+    },
+    {
+      "key": "ilb_eur",
+      "name": "Inflatiegekoppelde staatsobligaties (EUR)",
+      "category": "Vastrentend",
+      "model": "index_linked_bond",
+      "currency": "EUR",
+      "volatility": 0.060,
+      "params": {
+        "duration": 8.0,
+        "liquidity_premium": 0.0010,
+        "expected_credit_loss": 0.0002
+      }
+    },
+    {
+      "key": "credit_ig_eur",
+      "name": "Bedrijfsobligaties investment grade (EUR)",
+      "category": "Vastrentend",
+      "model": "spread_product",
+      "currency": "EUR",
+      "volatility": 0.045,
+      "params": {
+        "quotes": "credit.eur_ig",
+        "default_rate": 0.0010,
+        "recovery_rate": 0.40,
+        "downgrade_drag": 0.0025,
+        "spread_reversion_half_life": 3.0
+      }
+    },
+    {
+      "key": "credit_hy_eur",
+      "name": "High yield bedrijfsobligaties (EUR)",
+      "category": "Vastrentend",
+      "model": "spread_product",
+      "currency": "EUR",
+      "volatility": 0.100,
+      "params": {
+        "quotes": "credit.eur_hy",
+        "default_rate": 0.0360,
+        "recovery_rate": 0.40,
+        "downgrade_drag": 0.0025,
+        "spread_reversion_half_life": 3.0
+      }
+    },
+    {
+      "key": "emd_hc",
+      "name": "Emerging market debt (harde valuta)",
+      "category": "Vastrentend",
+      "model": "spread_product",
+      "currency": "USD",
+      "volatility": 0.090,
+      "params": {
+        "quotes": "credit.emd_hard_currency",
+        "default_rate": 0.0110,
+        "recovery_rate": 0.50,
+        "downgrade_drag": 0.0010,
+        "spread_reversion_half_life": 3.0
+      }
+    },
+    {
+      "key": "mortgages_nl",
+      "name": "Nederlandse hypotheken",
+      "category": "Vastrentend",
+      "model": "spread_product",
+      "currency": "EUR",
+      "volatility": 0.040,
+      "params": {
+        "quotes": "credit.dutch_mortgages",
+        "default_rate": 0.0015,
+        "recovery_rate": 0.85,
+        "prepayment_drag": 0.0015,
+        "spread_reversion_half_life": null
+      }
+    },
+    {
+      "key": "equity_dm",
+      "name": "Aandelen ontwikkelde markten",
+      "category": "Zakelijke waarden",
+      "model": "grinold_kroner",
+      "currency": "USD",
+      "volatility": 0.160,
+      "params": {
+        "quotes": "equity.developed",
+        "real_growth": 0.0150,
+        "valuation_metric": "cape",
+        "fair_value": 24.0,
+        "valuation_half_life": 12.0
+      }
+    },
+    {
+      "key": "equity_europe",
+      "name": "Aandelen Europa",
+      "category": "Zakelijke waarden",
+      "model": "grinold_kroner",
+      "currency": "EUR",
+      "volatility": 0.170,
+      "params": {
+        "quotes": "equity.europe",
+        "real_growth": 0.0120,
+        "valuation_metric": "cape",
+        "fair_value": 20.0,
+        "valuation_half_life": 12.0
+      }
+    },
+    {
+      "key": "equity_em",
+      "name": "Aandelen opkomende markten",
+      "category": "Zakelijke waarden",
+      "model": "grinold_kroner",
+      "currency": "USD",
+      "volatility": 0.200,
+      "params": {
+        "quotes": "equity.emerging",
+        "real_growth": 0.0250,
+        "valuation_metric": "cape",
+        "fair_value": 15.0,
+        "valuation_half_life": 12.0
+      }
+    },
+    {
+      "key": "real_estate_listed",
+      "name": "Beursgenoteerd vastgoed",
+      "category": "Zakelijke waarden",
+      "model": "grinold_kroner",
+      "currency": "EUR",
+      "volatility": 0.180,
+      "params": {
+        "quotes": "real_estate.listed",
+        "real_growth": 0.0000,
+        "inflation_pass_through": 0.90,
+        "valuation_metric": "price_to_nav",
+        "fair_value": 1.00,
+        "valuation_half_life": 8.0
+      }
+    },
+    {
+      "key": "real_estate_unlisted",
+      "name": "Niet-genoteerd vastgoed (core)",
+      "category": "Reele activa",
+      "model": "yield_and_growth",
+      "currency": "EUR",
+      "volatility": 0.100,
+      "params": {
+        "quotes": "real_estate.unlisted_core",
+        "capex_drag": 0.0080,
+        "real_growth": 0.0000,
+        "inflation_pass_through": 0.90,
+        "yield_reversion_half_life": 6.0,
+        "illiquidity_premium": 0.0030
+      }
+    },
+    {
+      "key": "infrastructure_core",
+      "name": "Infrastructuur (core, niet-genoteerd)",
+      "category": "Reele activa",
+      "model": "yield_and_growth",
+      "currency": "EUR",
+      "volatility": 0.110,
+      "params": {
+        "quotes": "infrastructure.core",
+        "capex_drag": 0.0060,
+        "real_growth": 0.0030,
+        "inflation_pass_through": 0.85,
+        "yield_reversion_half_life": 6.0,
+        "illiquidity_premium": 0.0050
+      }
+    },
+    {
+      "key": "commodities",
+      "name": "Grondstoffen",
+      "category": "Reele activa",
+      "model": "commodities",
+      "currency": "USD",
+      "volatility": 0.160,
+      "params": {
+        "quotes": "commodities.broad",
+        "real_spot_growth": 0.0000,
+        "rebalancing_return": 0.0040
+      }
+    },
+    {
+      "key": "private_equity",
+      "name": "Private equity (buyout)",
+      "category": "Zakelijke waarden",
+      "model": "levered_beta",
+      "currency": "EUR",
+      "volatility": 0.220,
+      "depends_on": ["equity_dm"],
+      "params": {
+        "reference": "equity_dm",
+        "beta": 1.25,
+        "illiquidity_premium": 0.0075,
+        "fee_drag": 0.0000
+      }
+    }
+  ]
+}

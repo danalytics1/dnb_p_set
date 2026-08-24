@@ -44,10 +44,11 @@ Homepage = "https://github.com/danalytics1/dnb_p_set"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dnb_p_set*"]
+include = ["dnb_p_set*", "market_implied*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "market_implied/tests"]
 
 [project.scripts]
 dnb-p-set-report = "dnb_p_set.report_cli:main"
+market-implied = "market_implied.cli:main"
