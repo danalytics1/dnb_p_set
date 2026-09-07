@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+
 import numpy as np
+import pandas as pd
 import pytest
 
 from dnb_p_set import ScenarioSet
 from dnb_p_set.lifecycle import (
     BESCHERMINGSPORTEFEUILLE,
+    DEFAULT_GEREALISEERDE_PORTEFEUILLES,
     DEFAULT_LIFECYCLE,
     DEFAULT_MAATMENSEN,
+    GEREALISEERDE_BESCHERMINGSPORTEFEUILLE,
+    GEREALISEERDE_RENDEMENTSPORTEFEUILLE,
     RENDEMENTSPORTEFEUILLE,
+    GerealiseerdePortefeuille,
     Lifecycle,
     Maatmens,
     Portefeuille,
     bond_returns,
     portefeuille_returns,
+    project_realised_wealth,
     project_wealth,
 )
 
@@ -164,6 +172,22 @@ class TestMaatmens:
         with pytest.raises(ValueError, match="pensioenvermogen"):
             Maatmens("x", 1990, -1, 50_000)
 
+    def test_invaardatum_defaults_to_1_1_2026(self):
+        mens = Maatmens("x", 1990, 0, 50_000)
+        assert mens.invaardatum == _dt.date(2026, 1, 1)
+
+    def test_invaardatum_accepts_a_date(self):
+        mens = Maatmens("x", 1990, 0, 50_000, invaardatum=_dt.date(2025, 6, 1))
+        assert mens.invaardatum == _dt.date(2025, 6, 1)
+
+    def test_invaardatum_accepts_an_iso_string(self):
+        mens = Maatmens("x", 1990, 0, 50_000, invaardatum="2027-03-15")
+        assert mens.invaardatum == _dt.date(2027, 3, 15)
+
+    def test_invaardatum_rejects_other_types(self):
+        with pytest.raises(TypeError, match="invaardatum"):
+            Maatmens("x", 1990, 0, 50_000, invaardatum=12345)
+
 
 class TestProjectWealth:
     @pytest.fixture(scope="class")
@@ -283,3 +307,93 @@ class TestProjectWealth:
                 (frame.loc[20, "p95"] - frame.loc[20, "p5"]) / frame.loc[20, "p50"]
             )
         assert spread[1] < spread[0]
+
+
+class TestGerealiseerdePortefeuille:
+    def test_rejects_negative_cost(self):
+        with pytest.raises(ValueError, match="cost"):
+            GerealiseerdePortefeuille(
+                key="x", label="x", bron_label="x", ophalen=lambda *a, **k: None,
+                cost=-0.01,
+            )
+
+    def test_defaults_point_at_msci_world_and_risk_free(self):
+        assert "MSCI World" in GEREALISEERDE_RENDEMENTSPORTEFEUILLE.bron_label
+        assert "isicovrije" in GEREALISEERDE_BESCHERMINGSPORTEFEUILLE.bron_label
+        assert DEFAULT_GEREALISEERDE_PORTEFEUILLES == (
+            GEREALISEERDE_RENDEMENTSPORTEFEUILLE,
+            GEREALISEERDE_BESCHERMINGSPORTEFEUILLE,
+        )
+
+
+class TestProjectRealisedWealth:
+    @pytest.fixture()
+    def returns(self):
+        jaren = range(2018, 2027)
+        rendement = pd.Series({j: 0.08 for j in jaren})
+        bescherming = pd.Series({j: 0.02 for j in jaren})
+        return rendement, bescherming
+
+    def test_starts_at_invaardatum_with_the_starting_capital(self, returns):
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2020-01-01")
+        projection = project_realised_wealth(
+            mens, DEFAULT_LIFECYCLE, *returns, tot_jaar=2023
+        )
+        assert projection.wealth[0] == pytest.approx(10_000)
+        assert list(projection.kalenderjaren) == [2020, 2021, 2022, 2023]
+        assert projection.wealth.shape == (5,)
+
+    def test_reproduces_the_recursion_by_hand(self, returns):
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2020-01-01")
+        projection = project_realised_wealth(
+            mens, DEFAULT_LIFECYCLE, *returns, tot_jaar=2021
+        )
+        weight = DEFAULT_LIFECYCLE.rendement_weight(2020 - 1990)
+        r_rendement = (1 + 0.08) * (1 - GEREALISEERDE_RENDEMENTSPORTEFEUILLE.cost) - 1
+        r_bescherming = (1 + 0.02) * (1 - GEREALISEERDE_BESCHERMINGSPORTEFEUILLE.cost) - 1
+        expected_return = weight * r_rendement + (1 - weight) * r_bescherming
+        premie = mens.jaarpremie
+        expected_wealth = (10_000 + premie) * (1 + expected_return)
+        assert projection.wealth[1] == pytest.approx(expected_wealth)
+
+    def test_frame_labels_years_and_ages(self, returns):
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2020-01-01")
+        projection = project_realised_wealth(
+            mens, DEFAULT_LIFECYCLE, *returns, tot_jaar=2022
+        )
+        frame = projection.frame
+        assert list(frame["kalenderjaar"]) == [2020, 2021, 2022, 2023]
+        assert list(frame["leeftijd"]) == [30, 31, 32, 33]
+
+    def test_future_invaardatum_yields_only_the_starting_point(self, returns):
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2030-01-01")
+        projection = project_realised_wealth(
+            mens, DEFAULT_LIFECYCLE, *returns, tot_jaar=2026
+        )
+        assert projection.wealth.shape == (1,)
+        assert projection.wealth[0] == pytest.approx(10_000)
+        assert projection.kalenderjaren.size == 0
+
+    def test_rejects_gaps_in_the_return_series(self):
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2020-01-01")
+        rendement = pd.Series({2020: 0.08, 2022: 0.08})   # 2021 missing
+        bescherming = pd.Series({2020: 0.02, 2022: 0.02})
+        with pytest.raises(ValueError, match="gaps"):
+            project_realised_wealth(
+                mens, DEFAULT_LIFECYCLE, rendement, bescherming, tot_jaar=2022
+            )
+
+    def test_uses_portefeuille_ophalen_when_returns_not_supplied(self, returns):
+        rendement, bescherming = returns
+        rendement_p = GerealiseerdePortefeuille(
+            key="r", label="r", bron_label="test", ophalen=lambda s, e, **k: rendement
+        )
+        bescherming_p = GerealiseerdePortefeuille(
+            key="b", label="b", bron_label="test", ophalen=lambda s, e, **k: bescherming
+        )
+        mens = Maatmens("x", 1990, 10_000, 40_000, invaardatum="2020-01-01")
+        projection = project_realised_wealth(
+            mens, DEFAULT_LIFECYCLE, portefeuilles=(rendement_p, bescherming_p),
+            tot_jaar=2022,
+        )
+        assert projection.kalenderjaren.size == 3

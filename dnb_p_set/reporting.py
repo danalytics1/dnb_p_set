@@ -797,7 +797,7 @@ def _maatmens_table(bundle) -> str:
     headers = [
         "Maatmens", "Geboortejaar", "Leeftijd op t=0", "Vermogen op t=0",
         "Pensioengevend salaris", "Franchise", "Premie", "Pensioenleeftijd",
-        "Start-allocatie rendement",
+        "Start-allocatie rendement", "Invaardatum",
     ]
     rows = []
     for person in bundle.people:
@@ -815,6 +815,7 @@ def _maatmens_table(bundle) -> str:
                 "van de grondslag)",
                 f"{mens.pensioenleeftijd} jr",
                 _fmt_rate(weight, 1),
+                mens.invaardatum.strftime("%d-%m-%Y"),
             ]
         )
     return _table(rows, headers)
@@ -924,6 +925,41 @@ def _wealth_horizon_table(bundle) -> str:
     return _table(rows, headers)
 
 
+def _gerealiseerde_portefeuille_table(bundle) -> str:
+    """Where the realised rendement- and beschermingsportefeuille invest."""
+    headers = ["Portefeuille", "Bron", "Kosten"]
+    rows = [
+        [
+            escape(portefeuille.label),
+            escape(portefeuille.bron_label),
+            _fmt_rate(portefeuille.cost, 2),
+        ]
+        for portefeuille in bundle.gerealiseerde_portefeuilles
+    ]
+    return _table(rows, headers)
+
+
+def _gerealiseerd_wealth_table(bundle) -> str:
+    """Realised cumulative wealth per calendar year, per maatmens."""
+    parts = []
+    for person in bundle.people:
+        if person.gerealiseerd is None:
+            continue
+        rows = [
+            [
+                f"{int(record['kalenderjaar'])} ({int(record['leeftijd'])} jr)",
+                _fmt_euro(record["vermogen"]),
+            ]
+            for _, record in person.gerealiseerd.iterrows()
+        ]
+        parts.append(
+            f"<h4 style='font-size:13px;color:#52514e;margin:14px 0 0'>"
+            f"{escape(person.maatmens.naam)}</h4>"
+            + _table(rows, ["Kalenderjaar", "Vermogen"])
+        )
+    return "".join(parts)
+
+
 def _lifecycle_section(current: ScenarioMetrics) -> str:
     """Lifecycle, maatmensen and their projected wealth.
 
@@ -998,8 +1034,41 @@ def _lifecycle_section(current: ScenarioMetrics) -> str:
         "rendementsfan zichtbaar is. Voor de oudste maatmens dempt de lifecycle "
         "die spreiding bovendien actief, doordat het gewicht in de "
         f"{escape(rendement.label.lower())} met de leeftijd afloopt.</p>",
-        "</section>",
     ]
+
+    people_met_gerealiseerd = [p for p in bundle.people if p.gerealiseerd is not None]
+    body.append("<h3>Gerealiseerd rendement</h3>")
+    if people_met_gerealiseerd:
+        body.append(
+            '<p class="lede">Naast de doorrekening op basis van deze scenarioset '
+            "volgt dit ook het <b>gerealiseerde</b> rendement sinds de "
+            "invaardatum: voor ieder verstreken kalenderjaar wordt het historische "
+            "rendement van de rendements- en beschermingsportefeuille genomen en met "
+            "de lifecycle-gewichten van dat jaar gecombineerd, op dezelfde manier als "
+            "de doorrekening hierboven — maar met een enkel, feitelijk pad in plaats "
+            "van een waaier aan scenario's.</p>"
+        )
+        body.append(_gerealiseerde_portefeuille_table(bundle))
+        body.append(
+            _figure(
+                charts.maatmens_gerealiseerd_rendement(current),
+                "Cumulatieve vermogensgroei sinds de invaardatum van elke maatmens, "
+                "op basis van het werkelijk gerealiseerde rendement.",
+                _gerealiseerd_wealth_table(bundle),
+                "Toon gerealiseerd vermogen per jaar",
+            )
+        )
+    else:
+        note = escape(bundle.gerealiseerd_note) or (
+            "geen van de maatmensen heeft nog een verstreken jaar sinds de "
+            "invaardatum, of de brondata kon niet worden opgehaald."
+        )
+        body.append(
+            f'<p class="note">Gerealiseerd rendement kon niet getoond worden: '
+            f"{note}.</p>"
+        )
+
+    body.append("</section>")
     return "".join(body)
 
 

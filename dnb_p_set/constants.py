@@ -13,6 +13,7 @@ https://www.dnb.nl/voor-de-sector/open-boek-toezicht/sectoren/pensioenfondsen/
 dnb-publiceert-definitieve-scenariosets-bij-wet-toekomst-pensioenen/
 """
 
+import datetime as _dt
 from dataclasses import dataclass
 from typing import Optional
 
@@ -241,3 +242,8 @@ DEFAULT_PREMIE_PERCENTAGE: float = 0.30
 # Salary offset (franchise) not covered by pension accrual.  A rounded
 # stand-in for the AOW franchise; set it to the scheme's own figure.
 DEFAULT_FRANCHISE: float = 18_000.0
+
+# Start of pension accrual under the new pension system (Wet toekomst
+# pensioenen).  Used as the default ``invaardatum`` for a maatmens, i.e. the
+# date from which realised returns are tracked.
+DEFAULT_INVAARDATUM: _dt.date = _dt.date(2026, 1, 1)

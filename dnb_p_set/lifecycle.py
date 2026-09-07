@@ -40,14 +40,16 @@ from __future__ import annotations
 
 import datetime as _dt
 from dataclasses import dataclass
-from typing import Sequence, Union
+from typing import Callable, Sequence, Union
 
 import numpy as np
 import pandas as pd
 
+from . import market_data
 from .constants import (
     COST_LOAD,
     DEFAULT_FRANCHISE,
+    DEFAULT_INVAARDATUM,
     DEFAULT_PENSIOENLEEFTIJD,
     DEFAULT_PERCENTILES,
     DEFAULT_PREMIE_PERCENTAGE,
@@ -59,14 +61,20 @@ __all__ = [
     "Lifecycle",
     "Maatmens",
     "WealthProjection",
+    "GerealiseerdePortefeuille",
+    "GerealiseerdeProjectie",
     "RENDEMENTSPORTEFEUILLE",
     "BESCHERMINGSPORTEFEUILLE",
     "DEFAULT_PORTEFEUILLES",
+    "GEREALISEERDE_RENDEMENTSPORTEFEUILLE",
+    "GEREALISEERDE_BESCHERMINGSPORTEFEUILLE",
+    "DEFAULT_GEREALISEERDE_PORTEFEUILLES",
     "DEFAULT_LIFECYCLE",
     "DEFAULT_MAATMENSEN",
     "bond_returns",
     "portefeuille_returns",
     "project_wealth",
+    "project_realised_wealth",
 ]
 
 #: Salary indexation: ``"geen"``/``None`` for a flat salary, a variable name
@@ -139,6 +147,41 @@ class Portefeuille:
                 f"{self.bond_maturity} jaar"
             )
         return " + ".join(parts) + f", na {self.cost * 10_000:.0f} bp kosten"
+
+
+@dataclass(frozen=True)
+class GerealiseerdePortefeuille:
+    """One portfolio leg for the *realised* return calculation.
+
+    Unlike :class:`Portefeuille` — driven by the simulated scenario set —
+    this is driven by a real, historical return series: the actual asset
+    class the portfolio invests in.  Swap ``ophalen`` for a different
+    callable to price the leg off another index or curve; that is the whole
+    definition of "where this portfolio invests".
+
+    Attributes
+    ----------
+    key, label:
+        Identifier and human-readable (Dutch) name.
+    bron_label:
+        Human description of the underlying market data source, shown in
+        reports.
+    ophalen:
+        Callable ``(start_year, end_year) -> pandas.Series`` returning
+        simple annual returns indexed by calendar year.
+    cost:
+        Annual cost load applied to the gross return.
+    """
+
+    key: str
+    label: str
+    bron_label: str
+    ophalen: Callable[..., pd.Series]
+    cost: float = COST_LOAD
+
+    def __post_init__(self) -> None:
+        if self.cost < 0.0:
+            raise ValueError(f"cost must not be negative, got {self.cost}")
 
 
 @dataclass(frozen=True)
@@ -236,6 +279,12 @@ class Maatmens:
         Salary offset not covered by pension accrual.
     pensioenleeftijd:
         Age at which contributions stop.
+    invaardatum:
+        Start date of pension accrual under the new pension system (Wet
+        toekomst pensioenen).  Realised returns are tracked from this date
+        onwards; accepts a :class:`datetime.date` or an ISO ``YYYY-MM-DD``
+        string.  Defaults to
+        :data:`~dnb_p_set.constants.DEFAULT_INVAARDATUM`.
     """
 
     naam: str
@@ -245,6 +294,7 @@ class Maatmens:
     premiepercentage: float = DEFAULT_PREMIE_PERCENTAGE
     franchise: float = DEFAULT_FRANCHISE
     pensioenleeftijd: int = DEFAULT_PENSIOENLEEFTIJD
+    invaardatum: _dt.date = DEFAULT_INVAARDATUM
 
     def __post_init__(self) -> None:
         if self.pensioenvermogen < 0:
@@ -262,6 +312,17 @@ class Maatmens:
             )
         if self.franchise < 0:
             raise ValueError(f"franchise must not be negative, got {self.franchise}")
+        if isinstance(self.invaardatum, str):
+            object.__setattr__(
+                self, "invaardatum", _dt.date.fromisoformat(self.invaardatum)
+            )
+        elif isinstance(self.invaardatum, _dt.datetime):
+            object.__setattr__(self, "invaardatum", self.invaardatum.date())
+        elif not isinstance(self.invaardatum, _dt.date):
+            raise TypeError(
+                "invaardatum must be a date, datetime or ISO string, got "
+                f"{type(self.invaardatum)!r}"
+            )
 
     def leeftijd(self, jaar: int) -> int:
         """Age reached in calendar year *jaar*."""
@@ -303,6 +364,33 @@ BESCHERMINGSPORTEFEUILLE = Portefeuille(
 DEFAULT_PORTEFEUILLES: tuple[Portefeuille, Portefeuille] = (
     RENDEMENTSPORTEFEUILLE,
     BESCHERMINGSPORTEFEUILLE,
+)
+
+#: Realised rendementsportefeuille default: MSCI World (net total return),
+#: fetched from Yahoo Finance.
+GEREALISEERDE_RENDEMENTSPORTEFEUILLE = GerealiseerdePortefeuille(
+    key="rendement",
+    label="Rendementsportefeuille",
+    bron_label="MSCI World (netto totaalrendement, via Yahoo Finance)",
+    ophalen=market_data.fetch_msci_world_returns,
+    cost=COST_LOAD,
+)
+
+#: Realised beschermingsportefeuille default: the euro risk-free (short)
+#: rate, fetched from the ECB Data Portal.
+GEREALISEERDE_BESCHERMINGSPORTEFEUILLE = GerealiseerdePortefeuille(
+    key="bescherming",
+    label="Beschermingsportefeuille",
+    bron_label="Risicovrije rente (via ECB Data Portal)",
+    ophalen=market_data.fetch_risk_free_returns,
+    cost=COST_LOAD,
+)
+
+DEFAULT_GEREALISEERDE_PORTEFEUILLES: tuple[
+    GerealiseerdePortefeuille, GerealiseerdePortefeuille
+] = (
+    GEREALISEERDE_RENDEMENTSPORTEFEUILLE,
+    GEREALISEERDE_BESCHERMINGSPORTEFEUILLE,
 )
 
 #: Fully in return assets until 40, then de-risking towards retirement.
@@ -676,6 +764,169 @@ def project_wealth(
         basisjaar=basisjaar,
         portefeuilles=portefeuilles,
         schedule=schedule,
+        wealth=wealth,
+        returns=r_portefeuille,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Realised (gerealiseerd) wealth
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GerealiseerdeProjectie:
+    """Realised wealth of one maatmens since ``invaardatum``.
+
+    Unlike :class:`WealthProjection`, this is a single deterministic path —
+    built from actual historical returns, not simulated scenarios — that
+    grows longer every year as more realised returns become available.
+
+    Attributes
+    ----------
+    maatmens, lifecycle, portefeuilles:
+        The inputs the projection was run with.
+    kalenderjaren:
+        Calendar years for which a realised (or year-to-date) return was
+        applied, in order.
+    wealth:
+        Array ``(len(kalenderjaren) + 1,)``; ``wealth[0]`` is the capital at
+        ``invaardatum``, ``wealth[i]`` the capital after applying the return
+        of ``kalenderjaren[i - 1]``.
+    returns:
+        Array ``(len(kalenderjaren),)`` of realised lifecycle-weighted
+        portfolio returns.
+    """
+
+    maatmens: Maatmens
+    lifecycle: Lifecycle
+    portefeuilles: tuple[GerealiseerdePortefeuille, GerealiseerdePortefeuille]
+    kalenderjaren: np.ndarray
+    wealth: np.ndarray
+    returns: np.ndarray
+
+    @property
+    def frame(self) -> pd.DataFrame:
+        """Realised wealth per calendar year, index ``projectiejaar``.
+
+        Mirrors :meth:`WealthProjection.percentiles`: index 0 is
+        ``invaardatum``, and column ``kalenderjaar``/``leeftijd`` give the
+        calendar year and age the wealth at that row pertains to.
+        """
+        n = len(self.wealth)
+        start_jaar = self.maatmens.invaardatum.year
+        kalenderjaar = start_jaar + np.arange(n)
+        return pd.DataFrame(
+            {
+                "kalenderjaar": kalenderjaar,
+                "leeftijd": [self.maatmens.leeftijd(j) for j in kalenderjaar],
+                "vermogen": self.wealth,
+            },
+            index=pd.Index(range(n), name="projectiejaar"),
+        )
+
+
+def project_realised_wealth(
+    maatmens: Maatmens,
+    lifecycle: Lifecycle = DEFAULT_LIFECYCLE,
+    rendement_returns: pd.Series | None = None,
+    bescherming_returns: pd.Series | None = None,
+    portefeuilles: tuple[GerealiseerdePortefeuille, GerealiseerdePortefeuille]
+    | None = None,
+    tot_jaar: int | None = None,
+) -> GerealiseerdeProjectie:
+    """Project the *realised* capital of *maatmens* since ``invaardatum``.
+
+    For every completed calendar year since ``invaardatum`` (and a
+    year-to-date figure for the current year), the historical return of the
+    rendement- and beschermingsportefeuille is combined with the lifecycle
+    weight for the age reached that year — the same recursion as
+    :func:`project_wealth`, but driven by realised returns instead of
+    simulated scenarios, and so producing a single path rather than a fan.
+
+    Parameters
+    ----------
+    maatmens:
+        The participant to project; ``maatmens.invaardatum`` fixes the
+        starting year and ``maatmens.pensioenvermogen`` the starting
+        capital.
+    lifecycle:
+        Allocation schedule; defaults to :data:`DEFAULT_LIFECYCLE`.
+    rendement_returns, bescherming_returns:
+        Pre-fetched annual return series indexed by calendar year; fetched
+        via ``portefeuilles[i].ophalen`` when omitted.
+    portefeuilles:
+        ``(rendementsportefeuille, beschermingsportefeuille)`` definitions;
+        defaults to :data:`DEFAULT_GEREALISEERDE_PORTEFEUILLES`.
+    tot_jaar:
+        Last calendar year to include; defaults to the current year.
+
+    Returns
+    -------
+    GerealiseerdeProjectie
+    """
+    portefeuilles = portefeuilles or DEFAULT_GEREALISEERDE_PORTEFEUILLES
+    rendement_p, bescherming_p = portefeuilles
+    start_jaar = maatmens.invaardatum.year
+    tot_jaar = int(tot_jaar) if tot_jaar is not None else _dt.date.today().year
+
+    if rendement_returns is None:
+        rendement_returns = rendement_p.ophalen(start_jaar, tot_jaar)
+    if bescherming_returns is None:
+        bescherming_returns = bescherming_p.ophalen(start_jaar, tot_jaar)
+
+    gevraagd = list(range(start_jaar, tot_jaar + 1))
+    jaren = np.array(
+        [
+            jaar
+            for jaar in gevraagd
+            if jaar in rendement_returns.index and jaar in bescherming_returns.index
+        ],
+        dtype=int,
+    )
+
+    if jaren.size == 0:
+        # Nothing has been realised yet (e.g. invaardatum lies in the
+        # future): the path is just the starting capital.
+        return GerealiseerdeProjectie(
+            maatmens=maatmens,
+            lifecycle=lifecycle,
+            portefeuilles=portefeuilles,
+            kalenderjaren=jaren,
+            wealth=np.array([float(maatmens.pensioenvermogen)]),
+            returns=np.array([]),
+        )
+
+    if not np.array_equal(jaren, np.arange(jaren[0], jaren[-1] + 1)):
+        raise ValueError(
+            "rendement_returns/bescherming_returns have gaps over "
+            f"{start_jaar}-{tot_jaar}; realised wealth needs a contiguous series"
+        )
+
+    r_rendement = (1.0 + rendement_returns.loc[jaren].to_numpy(dtype=float)) * (
+        1.0 - rendement_p.cost
+    ) - 1.0
+    r_bescherming = (1.0 + bescherming_returns.loc[jaren].to_numpy(dtype=float)) * (
+        1.0 - bescherming_p.cost
+    ) - 1.0
+
+    leeftijden = jaren - maatmens.geboortejaar
+    weight = lifecycle.rendement_weight(leeftijden)
+    r_portefeuille = weight * r_rendement + (1.0 - weight) * r_bescherming
+
+    contributing = (leeftijden < maatmens.pensioenleeftijd).astype(float)
+    premie = maatmens.jaarpremie * contributing
+
+    wealth = np.empty(jaren.size + 1, dtype=float)
+    wealth[0] = float(maatmens.pensioenvermogen)
+    for i in range(jaren.size):
+        wealth[i + 1] = (wealth[i] + premie[i]) * (1.0 + r_portefeuille[i])
+
+    return GerealiseerdeProjectie(
+        maatmens=maatmens,
+        lifecycle=lifecycle,
+        portefeuilles=portefeuilles,
+        kalenderjaren=jaren,
         wealth=wealth,
         returns=r_portefeuille,
     )

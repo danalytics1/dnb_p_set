@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from dnb_p_set import ScenarioSet, build_html_report, compute_metrics
 from dnb_p_set.constants import RETURN_HORIZONS
-from dnb_p_set.lifecycle import DEFAULT_MAATMENSEN
+from dnb_p_set.lifecycle import DEFAULT_MAATMENSEN, Maatmens
 from dnb_p_set.metrics import ScenarioMetrics
 
 N_SCEN = 300
@@ -186,6 +187,67 @@ class TestLifecycleMetrics:
         bundle = compute_metrics(make_set(5, label="leeg"), maatmensen=[])
         assert bundle.lifecycle is None
 
+    def test_gerealiseerd_is_none_without_realised_returns(self, current):
+        # The `current` fixture never supplies gerealiseerde_returns, so any
+        # network fetch fails in this offline test environment and every
+        # person's realised path stays unset rather than crashing the build.
+        for person in current.lifecycle.people:
+            assert person.gerealiseerd is None
+        assert current.lifecycle.gerealiseerd_note
+
+    def test_gerealiseerd_wealth_when_returns_are_supplied(self):
+        jaren = range(2018, 2027)
+        rendement = pd.Series({j: 0.08 for j in jaren})
+        bescherming = pd.Series({j: 0.02 for j in jaren})
+        maatmens = Maatmens(
+            "Starter", 2001, 5_000, 34_000, invaardatum="2020-01-01"
+        )
+        bundle = compute_metrics(
+            make_set(6, label="gerealiseerd"),
+            maatmensen=[maatmens],
+            gerealiseerde_returns=(rendement, bescherming),
+            basisjaar=2026,
+        )
+        person = bundle.lifecycle.people[0]
+        assert person.gerealiseerd is not None
+        assert person.gerealiseerd.loc[0, "vermogen"] == pytest.approx(5_000)
+        assert person.gerealiseerd["vermogen"].is_monotonic_increasing
+        assert bundle.lifecycle.gerealiseerd_note == ""
+        assert len(bundle.lifecycle.gerealiseerde_portefeuilles) == 2
+
+    def test_fetch_disabled_skips_gerealiseerd_without_a_note(self):
+        bundle = compute_metrics(
+            make_set(7, label="geen-fetch"), fetch_gerealiseerd_rendement=False
+        )
+        for person in bundle.lifecycle.people:
+            assert person.gerealiseerd is None
+        assert bundle.lifecycle.gerealiseerd_note == ""
+
+
+class TestMaatmensGerealiseerdRendementChart:
+    def test_raises_without_any_realised_data(self, current):
+        from dnb_p_set import charts
+
+        with pytest.raises(ValueError):
+            charts.maatmens_gerealiseerd_rendement(current)
+
+    def test_returns_a_figure_with_injected_data(self):
+        from dnb_p_set import charts
+
+        jaren = range(2018, 2027)
+        rendement = pd.Series({j: 0.08 for j in jaren})
+        bescherming = pd.Series({j: 0.02 for j in jaren})
+        bundle = compute_metrics(
+            make_set(9, label="gerealiseerd-chart"),
+            maatmensen=[
+                Maatmens("Starter", 2001, 5_000, 34_000, invaardatum="2020-01-01")
+            ],
+            gerealiseerde_returns=(rendement, bescherming),
+            basisjaar=2026,
+        )
+        fig = charts.maatmens_gerealiseerd_rendement(bundle)
+        assert fig.axes[0].lines
+
 
 class TestKpis:
     def test_kpis_exist(self, current):
@@ -281,3 +343,31 @@ class TestReport:
         # correlated.  The report must say so rather than show a silent 1.00.
         assert "bewegen vrijwel" in comparison_html
         assert "10j-rente" in comparison_html
+
+    def test_gerealiseerd_section_shows_fallback_note_without_network(
+        self, comparison_html
+    ):
+        # `comparison_html` is built from the module-scoped `current`/`previous`
+        # fixtures, which never inject gerealiseerde_returns; offline in this
+        # test environment the fetch fails and the report must show the note
+        # instead of crashing.
+        section = comparison_html[comparison_html.index('id="maatmens"'):]
+        assert "Gerealiseerd rendement" in section
+
+    def test_gerealiseerd_section_renders_chart_and_table_with_injected_data(self):
+        jaren = range(2018, 2027)
+        rendement = pd.Series({j: 0.08 for j in jaren})
+        bescherming = pd.Series({j: 0.02 for j in jaren})
+        bundle = compute_metrics(
+            make_set(8, label="gerealiseerd-report"),
+            maatmensen=[
+                Maatmens("Starter", 2001, 5_000, 34_000, invaardatum="2020-01-01")
+            ],
+            gerealiseerde_returns=(rendement, bescherming),
+            basisjaar=2026,
+        )
+        html = build_html_report(bundle)
+        section = html[html.index('id="maatmens"'):]
+        assert "Gerealiseerd rendement" in section
+        assert "MSCI World" in section
+        assert "risicovrije rente" in section.lower()
