@@ -273,6 +273,59 @@ bond_returns(ss, maturity=30, n_years=20)     # rolled 30-year zero
 `maatmensen`, `lifecycle`, `portefeuilles`, `wealth_horizons` and `basisjaar`;
 pass `maatmensen=[]` to leave the section out.
 
+#### Gerealiseerd rendement
+
+Every `Maatmens` also has an `invaardatum` — the start date of pension accrual
+under the new pension system (default 1 January 2026). From that date, the
+report can show the *realised* cumulative wealth growth: for every completed
+calendar year (and a partial return for the current one), the historical
+return of the rendementsportefeuille and beschermingsportefeuille is looked up
+and combined with the lifecycle weight, using the same recursion as
+`project_wealth` but with actual historical returns instead of simulated ones.
+
+What each realised portfolio actually invests in is configurable via
+`GerealiseerdePortefeuille`. The defaults track the MSCI World index (net
+total return, via Yahoo Finance) for the rendementsportefeuille and the euro
+short-term risk-free rate (via the ECB Data Portal) for the
+beschermingsportefeuille:
+
+```python
+from dnb_p_set.lifecycle import (
+    Maatmens, project_realised_wealth, DEFAULT_GEREALISEERDE_PORTEFEUILLES,
+)
+
+mens = Maatmens(
+    naam="Starter", geboortejaar=2001,
+    pensioenvermogen=5_000, pensioengevend_salaris=34_000,
+    invaardatum="2020-01-01",   # per-maatmens; defaults to 1-1-2026
+)
+
+projectie = project_realised_wealth(mens, DEFAULT_LIFECYCLE, basisjaar=2026)
+projectie.frame()   # kalenderjaar, leeftijd, vermogen — one row per realised year
+```
+
+`dnb_p_set.market_data` fetches and caches the underlying return series:
+
+```python
+from dnb_p_set import market_data
+
+rendement = market_data.fetch_msci_world_returns(2020, 2026)
+bescherming = market_data.fetch_risk_free_returns(2020, 2026)
+```
+
+Results are cached on disk (`~/.cache/dnb_p_set/market_data` by default, or
+`cache_dir=...`) so repeated report builds don't refetch every time; pass
+`refresh=True` to force a refetch. If the source is unreachable, cached data
+is reused when available; otherwise a `market_data.MarketDataError` is
+raised — `compute_metrics` catches this and simply omits the realised-return
+section (with an explanatory note) rather than failing the whole report.
+
+`compute_metrics` accepts `gerealiseerde_portefeuilles` (to swap in your own
+`GerealiseerdePortefeuille` definitions), `gerealiseerde_returns` (to inject
+pre-fetched `(rendement, bescherming)` series, e.g. in tests or offline runs),
+`fetch_gerealiseerd_rendement=False` (to skip fetching altogether) and
+`market_data_cache_dir`.
+
 ### Plotting
 
 `dnb_p_set.plotting` holds generic helpers that take raw arrays:
@@ -330,7 +383,7 @@ alongside it) covering:
 | **Prijsinflatie NL & EU** | The same treatment for both inflation blocks |
 | **Verplichtingenproxy** | Present value and Macaulay duration of a flat 60-year cashflow on the nominal curve — turns a curve shift into a value |
 | **Samenhang** | Year-1 correlation matrix plus its change; automatically flags variable pairs that move in lockstep |
-| **Maatmens en lifecycle** | Allocation per age over the return and protection portfolios; the parameters of a handful of maatmensen; their projected capital over the whole horizon and at 1, 10 and 20 years |
+| **Maatmens en lifecycle** | Allocation per age over the return and protection portfolios; the parameters of a handful of maatmensen; their projected capital over the whole horizon and at 1, 10 and 20 years; realised cumulative wealth growth since each maatmens' invaardatum, when historical return data is available |
 
 Every chart carries the table it was drawn from in a collapsible block.
 

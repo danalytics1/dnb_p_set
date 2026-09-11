@@ -35,6 +35,7 @@ __all__ = [
     "lifecycle_allocation",
     "maatmens_wealth_fan",
     "maatmens_horizon_boxes",
+    "maatmens_gerealiseerd_rendement",
 ]
 
 #: Validated palette (see the project data-viz notes).  Slot 1 is the current
@@ -1124,4 +1125,54 @@ def maatmens_horizon_boxes(current):
 
     ax.yaxis.set_minor_formatter(NullFormatter())
     _legend(ax, handles=handles, loc="upper left", ncol=min(3, len(handles)))
+    return fig
+
+
+def maatmens_gerealiseerd_rendement(current):
+    """Cumulative realised wealth since ``invaardatum``, one line per maatmens.
+
+    Unlike :func:`maatmens_wealth_fan` this is a single historical path per
+    maatmens, not a percentile fan: realised returns are a fact, not a
+    simulation. People without a realised path yet (e.g. a future
+    ``invaardatum``, or the data could not be fetched) are skipped.
+    """
+    plt = _plt()
+    bundle = _require_lifecycle(current)
+    people = [p for p in bundle.people if p.gerealiseerd is not None]
+    if not people:
+        raise ValueError(
+            "the metrics bundle holds no realised-return projections"
+        )
+
+    fig, ax = _new_figure(plt, (9.5, 4.8))
+    for i, person in enumerate(people):
+        colour = _person_colour(i)
+        frame = person.gerealiseerd
+        ax.plot(
+            frame["kalenderjaar"].to_numpy(),
+            frame["vermogen"].to_numpy(),
+            color=colour,
+            lw=2.0,
+            marker="o",
+            ms=4,
+            label=person.maatmens.naam,
+            zorder=3,
+        )
+
+    ax.axvline(
+        min(p.maatmens.invaardatum.year for p in people),
+        color=PALETTE["ink"], lw=1.0, ls=":", zorder=2,
+    )
+    _style_axes(
+        ax,
+        xlabel="Kalenderjaar",
+        ylabel="Pensioenvermogen",
+        title="Gerealiseerd rendement sinds invaardatum",
+    )
+    _as_euro(ax)
+    from matplotlib.ticker import MaxNLocator
+
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    _legend(ax, loc="upper left")
+    fig.tight_layout()
     return fig

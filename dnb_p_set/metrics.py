@@ -39,15 +39,19 @@ from .constants import (
     WEALTH_HORIZONS,
 )
 from .lifecycle import (
+    DEFAULT_GEREALISEERDE_PORTEFEUILLES,
     DEFAULT_LIFECYCLE,
     DEFAULT_MAATMENSEN,
     DEFAULT_PORTEFEUILLES,
+    GerealiseerdePortefeuille,
     Lifecycle,
     Maatmens,
     Portefeuille,
     portefeuille_returns,
+    project_realised_wealth,
     project_wealth,
 )
+from .market_data import MarketDataError
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +181,9 @@ class MaatmensMetrics:
     horizons: dict             # {horizon: dict[str, float]}
     #: Starting age, i.e. the age at projection year 0.
     startleeftijd: int = 0
+    #: Realised wealth since ``maatmens.invaardatum``, one path (not a fan);
+    #: ``None`` when realised returns could not be obtained.
+    gerealiseerd: Optional[pd.DataFrame] = None
 
 
 @dataclass
@@ -195,6 +202,11 @@ class LifecycleMetrics:
     people: list = field(default_factory=list)        # [MaatmensMetrics]
     #: Horizons (years) at which wealth is reported.
     horizons: list = field(default_factory=list)
+    #: Realised (historical) portfolio definitions, when available.
+    gerealiseerde_portefeuilles: tuple = ()
+    #: Short explanation when the realised-return section could not be
+    #: computed (e.g. no network access); empty when it succeeded.
+    gerealiseerd_note: str = ""
 
 
 @dataclass
@@ -386,6 +398,10 @@ def _lifecycle_metrics(
     horizons: Sequence[int],
     basisjaar: int,
     percentiles: list[float],
+    gerealiseerde_portefeuilles: tuple[GerealiseerdePortefeuille, GerealiseerdePortefeuille],
+    gerealiseerde_returns: Optional[tuple[pd.Series, pd.Series]],
+    fetch_gerealiseerd_rendement: bool,
+    market_data_cache_dir=None,
 ) -> Optional[LifecycleMetrics]:
     """Run every maatmens through the lifecycle and reduce to percentiles."""
     if not maatmensen:
@@ -419,6 +435,28 @@ def _lifecycle_metrics(
         }
         del log_growth
 
+    # -- realised returns, shared across every maatmens ---------------------
+    gerealiseerd_note = ""
+    if gerealiseerde_returns is not None:
+        rendement_real, bescherming_real = gerealiseerde_returns
+    elif fetch_gerealiseerd_rendement:
+        start_jaar = min(mens.invaardatum.year for mens in maatmensen)
+        eind_jaar = _dt.date.today().year
+        try:
+            rendement_p, bescherming_p = gerealiseerde_portefeuilles
+            rendement_real = rendement_p.ophalen(
+                start_jaar, eind_jaar, cache_dir=market_data_cache_dir
+            )
+            bescherming_real = bescherming_p.ophalen(
+                start_jaar, eind_jaar, cache_dir=market_data_cache_dir
+            )
+        except MarketDataError as exc:
+            logger.warning("gerealiseerd rendement niet beschikbaar: %s", exc)
+            rendement_real = bescherming_real = None
+            gerealiseerd_note = str(exc)
+    else:
+        rendement_real = bescherming_real = None
+
     people = []
     for maatmens in maatmensen:
         projection = project_wealth(
@@ -431,6 +469,25 @@ def _lifecycle_metrics(
             states=states,
             returns=returns,
         )
+
+        gerealiseerd = None
+        if rendement_real is not None and bescherming_real is not None:
+            try:
+                realised = project_realised_wealth(
+                    maatmens,
+                    lifecycle=lifecycle,
+                    rendement_returns=rendement_real,
+                    bescherming_returns=bescherming_real,
+                    portefeuilles=gerealiseerde_portefeuilles,
+                )
+                gerealiseerd = realised.frame
+            except ValueError as exc:
+                logger.warning(
+                    "gerealiseerd rendement voor %s overgeslagen: %s",
+                    maatmens.naam,
+                    exc,
+                )
+
         people.append(
             MaatmensMetrics(
                 maatmens=maatmens,
@@ -441,6 +498,7 @@ def _lifecycle_metrics(
                     for h in horizons
                 },
                 startleeftijd=maatmens.leeftijd(basisjaar),
+                gerealiseerd=gerealiseerd,
             )
         )
         del projection
@@ -461,6 +519,8 @@ def _lifecycle_metrics(
         returns=pd.DataFrame(return_rows).T.rename_axis("portefeuille"),
         people=people,
         horizons=list(horizons),
+        gerealiseerde_portefeuilles=tuple(gerealiseerde_portefeuilles),
+        gerealiseerd_note=gerealiseerd_note,
     )
 
 
@@ -483,6 +543,13 @@ def compute_metrics(
     portefeuilles: tuple[Portefeuille, Portefeuille] | None = None,
     wealth_horizons: list[int] | None = None,
     basisjaar: int | None = None,
+    gerealiseerde_portefeuilles: tuple[
+        GerealiseerdePortefeuille, GerealiseerdePortefeuille
+    ]
+    | None = None,
+    gerealiseerde_returns: tuple[pd.Series, pd.Series] | None = None,
+    fetch_gerealiseerd_rendement: bool = True,
+    market_data_cache_dir=None,
 ) -> ScenarioMetrics:
     """Reduce a :class:`~dnb_p_set.ScenarioSet` to a report metrics bundle.
 
@@ -522,6 +589,23 @@ def compute_metrics(
         Horizons (years) at which projected wealth is reported.
     basisjaar:
         Calendar year of projection year 0.  Read from *label* when omitted.
+    gerealiseerde_portefeuilles:
+        ``(rendementsportefeuille, beschermingsportefeuille)`` realised-return
+        definitions; defaults to
+        :data:`~dnb_p_set.lifecycle.DEFAULT_GEREALISEERDE_PORTEFEUILLES`
+        (MSCI World / risicovrije rente).
+    gerealiseerde_returns:
+        Pre-fetched ``(rendement, bescherming)`` annual return series,
+        indexed by calendar year, to skip fetching entirely (e.g. in tests
+        or offline runs).
+    fetch_gerealiseerd_rendement:
+        Whether to fetch realised returns over the network when
+        *gerealiseerde_returns* is not supplied.  A failed fetch is caught
+        and logged; the report is built without the realised-return section
+        rather than failing outright.
+    market_data_cache_dir:
+        Directory the realised-return cache lives in; see
+        :mod:`dnb_p_set.market_data`.
 
     Returns
     -------
@@ -536,6 +620,9 @@ def compute_metrics(
     portefeuilles = portefeuilles or DEFAULT_PORTEFEUILLES
     wealth_horizons = wealth_horizons or WEALTH_HORIZONS
     maatmensen = DEFAULT_MAATMENSEN if maatmensen is None else maatmensen
+    gerealiseerde_portefeuilles = (
+        gerealiseerde_portefeuilles or DEFAULT_GEREALISEERDE_PORTEFEUILLES
+    )
 
     source = str(scenario_set.source_path or "in-memory")
     if label is None:
@@ -624,6 +711,10 @@ def compute_metrics(
         horizons=wealth_horizons,
         basisjaar=basisjaar if basisjaar is not None else _basisjaar_from_label(label),
         percentiles=percentiles,
+        gerealiseerde_portefeuilles=gerealiseerde_portefeuilles,
+        gerealiseerde_returns=gerealiseerde_returns,
+        fetch_gerealiseerd_rendement=fetch_gerealiseerd_rendement,
+        market_data_cache_dir=market_data_cache_dir,
     )
 
     # -- headline figures --------------------------------------------------
