@@ -326,6 +326,15 @@ pre-fetched `(rendement, bescherming)` series, e.g. in tests or offline runs),
 `fetch_gerealiseerd_rendement=False` (to skip fetching altogether) and
 `market_data_cache_dir`.
 
+When a realised path covers at least one completed calendar year, the
+projection is *anchored* on its last point: `MaatmensMetrics.ankerjaar` and
+`.ankervermogen` give the calendar year and capital of projection year 0, and
+the scenario returns are applied from there instead of from the invaardatum.
+`charts.maatmens_wealth_fan` then draws the realised line before the fan on a
+calendar-year axis, with the two meeting at the anchor. Without realised data
+the anchor falls back to the set's base year and the opening capital, as
+before.
+
 ### Plotting
 
 `dnb_p_set.plotting` holds generic helpers that take raw arrays:

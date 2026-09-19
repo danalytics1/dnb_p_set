@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -184,6 +184,13 @@ class MaatmensMetrics:
     #: Realised wealth since ``maatmens.invaardatum``, one path (not a fan);
     #: ``None`` when realised returns could not be obtained.
     gerealiseerd: Optional[pd.DataFrame] = None
+    #: Calendar year of projection year 0.  Equal to the set's ``basisjaar``
+    #: unless a realised path is available, in which case the projection is
+    #: anchored on the last realised year.
+    ankerjaar: int = 0
+    #: Capital at projection year 0: the realised capital in ``ankerjaar``
+    #: when known, otherwise ``maatmens.pensioenvermogen``.
+    ankervermogen: float = 0.0
 
 
 @dataclass
@@ -459,17 +466,6 @@ def _lifecycle_metrics(
 
     people = []
     for maatmens in maatmensen:
-        projection = project_wealth(
-            scenario_set,
-            maatmens,
-            lifecycle=lifecycle,
-            portefeuilles=portefeuilles,
-            horizon=horizon,
-            basisjaar=basisjaar,
-            states=states,
-            returns=returns,
-        )
-
         gerealiseerd = None
         if rendement_real is not None and bescherming_real is not None:
             try:
@@ -488,6 +484,26 @@ def _lifecycle_metrics(
                     exc,
                 )
 
+        # The projection picks up where the realised path stops: as long as
+        # the capital is a fact, simulating it again would replace what is
+        # known with a fan.  Without realised years the anchor is the set's
+        # own base year and the opening capital, as before.
+        ankerjaar, ankervermogen = basisjaar, float(maatmens.pensioenvermogen)
+        if gerealiseerd is not None and len(gerealiseerd) > 1:
+            ankerjaar = int(gerealiseerd["kalenderjaar"].iloc[-1])
+            ankervermogen = float(gerealiseerd["vermogen"].iloc[-1])
+
+        projection = project_wealth(
+            scenario_set,
+            replace(maatmens, pensioenvermogen=ankervermogen),
+            lifecycle=lifecycle,
+            portefeuilles=portefeuilles,
+            horizon=horizon,
+            basisjaar=ankerjaar,
+            states=states,
+            returns=returns,
+        )
+
         people.append(
             MaatmensMetrics(
                 maatmens=maatmens,
@@ -497,8 +513,10 @@ def _lifecycle_metrics(
                     h: analysis.distribution_stats(projection.at(h), percentiles)
                     for h in horizons
                 },
-                startleeftijd=maatmens.leeftijd(basisjaar),
+                startleeftijd=maatmens.leeftijd(ankerjaar),
                 gerealiseerd=gerealiseerd,
+                ankerjaar=ankerjaar,
+                ankervermogen=ankervermogen,
             )
         )
         del projection

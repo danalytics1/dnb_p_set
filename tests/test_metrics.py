@@ -215,6 +215,39 @@ class TestLifecycleMetrics:
         assert bundle.lifecycle.gerealiseerd_note == ""
         assert len(bundle.lifecycle.gerealiseerde_portefeuilles) == 2
 
+    def test_projection_is_anchored_on_the_last_realised_point(self):
+        # Invaardatum 1-1-2026 with one realised year (2026): the projection
+        # must start where the realised path stops, not at the opening
+        # capital, so the fan continues the line instead of restarting it.
+        rendement = pd.Series({2026: 0.08})
+        bescherming = pd.Series({2026: 0.02})
+        maatmens = Maatmens(
+            "Starter", 2001, 5_000, 34_000, invaardatum="2026-01-01"
+        )
+        bundle = compute_metrics(
+            make_set(10, label="anker"),
+            maatmensen=[maatmens],
+            gerealiseerde_returns=(rendement, bescherming),
+            basisjaar=2026,
+        )
+        person = bundle.lifecycle.people[0]
+        laatste = person.gerealiseerd.iloc[-1]
+
+        assert person.ankerjaar == int(laatste["kalenderjaar"]) == 2027
+        assert person.ankervermogen == pytest.approx(float(laatste["vermogen"]))
+        assert person.paths.loc[0, "p50"] == pytest.approx(person.ankervermogen)
+        assert person.startleeftijd == maatmens.leeftijd(2027)
+
+    def test_anchor_falls_back_to_the_base_year_without_realised_data(self):
+        bundle = compute_metrics(
+            make_set(11, label="geen-anker"), fetch_gerealiseerd_rendement=False
+        )
+        for person in bundle.lifecycle.people:
+            assert person.ankerjaar == bundle.lifecycle.basisjaar
+            assert person.ankervermogen == pytest.approx(
+                person.maatmens.pensioenvermogen
+            )
+
     def test_fetch_disabled_skips_gerealiseerd_without_a_note(self):
         bundle = compute_metrics(
             make_set(7, label="geen-fetch"), fetch_gerealiseerd_rendement=False
@@ -247,6 +280,50 @@ class TestMaatmensGerealiseerdRendementChart:
         )
         fig = charts.maatmens_gerealiseerd_rendement(bundle)
         assert fig.axes[0].lines
+
+
+class TestMaatmensWealthFan:
+    def test_no_realised_line_without_realised_data(self, current):
+        # Offline the fetch fails, so the fan starts at the base year and no
+        # realised line is drawn.
+        from dnb_p_set import charts
+
+        fig = charts.maatmens_wealth_fan(current)
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == "Kalenderjaar"
+        assert "gerealiseerd" not in ax.get_legend_handles_labels()[1]
+        person = current.lifecycle.people[0]
+        assert ax.lines[0].get_xdata()[0] == person.ankerjaar
+
+    def test_realised_line_precedes_the_fan(self):
+        from dnb_p_set import charts
+
+        rendement = pd.Series({2026: 0.08})
+        bescherming = pd.Series({2026: 0.02})
+        bundle = compute_metrics(
+            make_set(12, label="waaier-gerealiseerd"),
+            maatmensen=[
+                Maatmens("Starter", 2001, 5_000, 34_000, invaardatum="2026-01-01")
+            ],
+            gerealiseerde_returns=(rendement, bescherming),
+            basisjaar=2026,
+        )
+        person = bundle.lifecycle.people[0]
+        fig = charts.maatmens_wealth_fan(bundle)
+        ax = fig.axes[0]
+
+        assert ax.get_xlabel() == "Kalenderjaar"
+        lines = dict(zip(*reversed(ax.get_legend_handles_labels())))
+        assert "gerealiseerd" in lines
+
+        realised_x = lines["gerealiseerd"].get_xdata()
+        assert realised_x[0] == person.maatmens.invaardatum.year
+        assert realised_x[-1] == person.ankerjaar
+        # The fan picks up exactly where the realised line ends.
+        assert lines["mediaan"].get_xdata()[0] == person.ankerjaar
+        assert lines["gerealiseerd"].get_ydata()[-1] == pytest.approx(
+            lines["mediaan"].get_ydata()[0]
+        )
 
 
 class TestKpis:
@@ -327,7 +404,8 @@ class TestReport:
         section = comparison_html[comparison_html.index('id="maatmens"'):]
         for horizon in (1, 10, 20):
             assert f"{horizon} jaar" in section
-            assert f"<td>{horizon} jr</td>" in section
+            # The horizon column also names the calendar year it lands in.
+            assert f"<td>{horizon} jr (" in section
 
     def test_lifecycle_section_shows_euro_amounts(self, comparison_html):
         assert "€ " in comparison_html
