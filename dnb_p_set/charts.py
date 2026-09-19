@@ -980,6 +980,12 @@ def maatmens_wealth_fan(current):
     Each panel keeps its own y-axis: the three maatmensen differ by an order
     of magnitude in starting capital, and a shared axis would flatten the
     youngest into the baseline.
+
+    When a realised path is available it is drawn as a single line *before*
+    the fan, from the invaardatum up to the last realised year.  The
+    projection is anchored on that last realised point (see
+    :func:`~dnb_p_set.metrics.compute_metrics`), so line and fan meet without
+    a jump and the x-axis reads as calendar years.
     """
     plt = _plt()
     from matplotlib.ticker import MaxNLocator
@@ -996,7 +1002,8 @@ def maatmens_wealth_fan(current):
 
     for ax, person in zip(flat, people):
         frame = person.paths
-        x = frame.index.to_numpy()
+        ankerjaar = int(getattr(person, "ankerjaar", 0))
+        x = frame.index.to_numpy() + ankerjaar
         _draw_fan(ax, x, frame)
         ax.plot(
             x,
@@ -1007,9 +1014,24 @@ def maatmens_wealth_fan(current):
             zorder=5,
             label="gemiddelde",
         )
+
+        realised = getattr(person, "gerealiseerd", None)
+        if ankerjaar and realised is not None and len(realised) > 1:
+            ax.plot(
+                realised["kalenderjaar"].to_numpy(),
+                realised["vermogen"].to_numpy(),
+                color=PALETTE["accent"],
+                lw=2.0,
+                marker="o",
+                ms=3.5,
+                zorder=6,
+                label="gerealiseerd",
+            )
+            ax.axvline(ankerjaar, color=PALETTE["muted"], lw=0.9, ls="--", zorder=1)
+
         _style_axes(
             ax,
-            xlabel="Projectiejaar",
+            xlabel="Kalenderjaar" if ankerjaar else "Projectiejaar",
             ylabel="Pensioenvermogen",
             title=f"{person.maatmens.naam} — {person.startleeftijd} jaar op t=0",
         )
@@ -1019,7 +1041,15 @@ def maatmens_wealth_fan(current):
     for ax in flat[len(people):]:
         ax.set_visible(False)
 
-    handles, labels = flat[0].get_legend_handles_labels()
+    # Collect the legend across panels: the realised line only exists for the
+    # maatmensen whose invaardatum has already passed, which need not include
+    # the first one.
+    handles, labels = [], []
+    for ax in flat[:len(people)]:
+        for handle, label in zip(*ax.get_legend_handles_labels()):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
     fig.legend(
         handles,
         labels,

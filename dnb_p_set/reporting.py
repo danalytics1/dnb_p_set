@@ -795,9 +795,9 @@ def _correlation_section(
 def _maatmens_table(bundle) -> str:
     """The parameters every maatmens was projected with."""
     headers = [
-        "Maatmens", "Geboortejaar", "Leeftijd op t=0", "Vermogen op t=0",
-        "Pensioengevend salaris", "Franchise", "Premie", "Pensioenleeftijd",
-        "Start-allocatie rendement", "Invaardatum",
+        "Maatmens", "Geboortejaar", "Invaardatum", "Vermogen op invaardatum",
+        "t=0", "Leeftijd op t=0", "Vermogen op t=0", "Pensioengevend salaris",
+        "Franchise", "Premie", "Pensioenleeftijd", "Start-allocatie rendement",
     ]
     rows = []
     for person in bundle.people:
@@ -807,15 +807,17 @@ def _maatmens_table(bundle) -> str:
             [
                 escape(mens.naam),
                 str(mens.geboortejaar),
-                f"{person.startleeftijd} jr",
+                mens.invaardatum.strftime("%d-%m-%Y"),
                 _fmt_euro(mens.pensioenvermogen),
+                str(person.ankerjaar),
+                f"{person.startleeftijd} jr",
+                _fmt_euro(person.ankervermogen),
                 _fmt_euro(mens.pensioengevend_salaris),
                 _fmt_euro(mens.franchise),
                 f"{_fmt_euro(mens.jaarpremie)} ({_fmt_rate(mens.premiepercentage, 0)} "
                 "van de grondslag)",
                 f"{mens.pensioenleeftijd} jr",
                 _fmt_rate(weight, 1),
-                mens.invaardatum.strftime("%d-%m-%Y"),
             ]
         )
     return _table(rows, headers)
@@ -872,7 +874,8 @@ def _wealth_path_table(bundle) -> str:
         frame = person.paths
         rows = [
             [
-                f"jaar {int(year)} ({int(record['leeftijd'])} jr)",
+                f"jaar {int(year)} — {person.ankerjaar + int(year)} "
+                f"({int(record['leeftijd'])} jr)",
                 _fmt_euro(record["mean"]),
                 _fmt_euro(record["p5"]),
                 _fmt_euro(record["p25"]),
@@ -897,7 +900,7 @@ def _wealth_horizon_table(bundle) -> str:
     """Capital at each reported horizon, per maatmens."""
     headers = [
         "Maatmens", "Horizon", "Leeftijd", "Gemiddelde", "p5", "p25",
-        "Mediaan", "p75", "p95", "Totale inleg (gemiddeld)",
+        "Mediaan", "p75", "p95", "Vermogen op t=0 + inleg (gemiddeld)",
     ]
     rows = []
     for person in bundle.people:
@@ -907,11 +910,11 @@ def _wealth_horizon_table(bundle) -> str:
             if record is None:
                 continue
             schedule = person.schedule.iloc[:horizon]
-            inleg = mens.pensioenvermogen + float(schedule["premie"].sum())
+            inleg = person.ankervermogen + float(schedule["premie"].sum())
             rows.append(
                 [
                     escape(mens.naam),
-                    f"{horizon} jr",
+                    f"{horizon} jr ({person.ankerjaar + horizon})",
                     f"{person.startleeftijd + horizon} jr",
                     _fmt_euro(record["mean"]),
                     _fmt_euro(record["p5"]),
@@ -974,17 +977,45 @@ def _lifecycle_section(current: ScenarioMetrics) -> str:
     rendement, bescherming = bundle.portefeuilles[0], bundle.portefeuilles[1]
     horizons = ", ".join(f"{h} jaar" for h in bundle.horizons)
 
+    # People whose realised path already covers a completed year; for them the
+    # projection is anchored on that last realised point instead of on the
+    # base year of the set.
+    verankerd = [
+        person
+        for person in bundle.people
+        if person.gerealiseerd is not None and len(person.gerealiseerd) > 1
+    ]
+    if verankerd:
+        ankerjaren = ", ".join(
+            str(jaar) for jaar in sorted({p.ankerjaar for p in verankerd})
+        )
+        t0_zin = (
+            "met projectiejaar 0 op het laatst gerealiseerde vermogen "
+            f"({escape(ankerjaren)})"
+        )
+    else:
+        t0_zin = f"met projectiejaar 0 in {bundle.basisjaar}"
+
     body = [
         '<section id="maatmens">',
         "<h2>Maatmens en lifecycle</h2>",
         '<p class="lede">Wat de set voor een deelnemer betekent, hangt af van hoe '
         "die belegt. Hieronder wordt het vermogen van een aantal maatmensen "
-        f"doorgerekend over {escape(horizons)}, met projectiejaar 0 in "
-        f"{bundle.basisjaar}. Het vermogen wordt verdeeld over een "
+        f"doorgerekend over {escape(horizons)}, {t0_zin}. "
+        "Het vermogen wordt verdeeld over een "
         "<b>rendementsportefeuille</b> en een <b>beschermingsportefeuille</b>, "
         "die beide hun rendement uit deze scenarioset halen; de lifecycle bepaalt "
         "per leeftijd de verdeling.</p>",
-        '<p class="note">Dit zijn modelaannames, geen DNB-voorschriften. De set '
+        '<p class="note">'
+        + (
+            "De doorrekening begint niet op de invaardatum maar op het laatst "
+            "bekende gerealiseerde vermogen: voor verstreken jaren is het "
+            "vermogen een feit en geen scenario. De scenariorendementen van de "
+            "set worden vanaf dat punt toegepast. "
+            if verankerd
+            else ""
+        )
+        + 'Dit zijn modelaannames, geen DNB-voorschriften. De set '
         "levert alleen de rendementen. Per projectiejaar geldt "
         "<code>V(t+1) = (V(t) + premie(t)) · (1 + w·r_rendement + (1−w)·r_bescherming)</code>: "
         "de premie van een jaar wordt aan het begin van dat jaar ingelegd en "
@@ -1017,7 +1048,15 @@ def _lifecycle_section(current: ScenarioMetrics) -> str:
             "Ontwikkeling van het pensioenvermogen per maatmens over alle "
             f"{_fmt_count(current.n_scenarios)} scenario's. De banden zijn de "
             "5–95, 10–90 en 25–75 percentielintervallen. Elk paneel heeft een "
-            "eigen schaal.",
+            "eigen schaal."
+            + (
+                " De lijn vóór de waaier is het <b>gerealiseerde</b> vermogen "
+                "sinds de invaardatum; de gestippelde verticale lijn markeert "
+                "het laatste gerealiseerde jaar, waar de doorrekening op "
+                "aansluit."
+                if verankerd
+                else ""
+            ),
             _wealth_path_table(bundle),
             "Toon vermogens per projectiejaar",
         ),
