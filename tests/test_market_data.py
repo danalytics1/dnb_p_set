@@ -34,11 +34,14 @@ def _yahoo_payload(dates: list[str], closes: list[float]) -> bytes:
     ).encode()
 
 
-def _ecb_payload(start: _dt.date, end: _dt.date, rate_pct: float) -> bytes:
+def _ecb_payload(
+    start: _dt.date, end: _dt.date, rate_pct: float, *, business_days: bool = False
+) -> bytes:
     lines = ["TIME_PERIOD,OBS_VALUE"]
     day = start
     while day <= end:
-        lines.append(f"{day.isoformat()},{rate_pct}")
+        if not business_days or day.weekday() < 5:
+            lines.append(f"{day.isoformat()},{rate_pct}")
         day += _dt.timedelta(days=1)
     return "\n".join(lines).encode()
 
@@ -135,6 +138,81 @@ class TestFetchRiskFreeReturns:
 
         with pytest.raises(market_data.MarketDataError):
             market_data.fetch_risk_free_returns(2020, 2020, cache_dir=tmp_path, http_get=boom)
+
+    def test_requests_the_dataflow_and_key_as_separate_path_segments(self, tmp_path):
+        # The ECB API addresses a series as <dataflow>/<key>; sending the
+        # dotted key the Data Portal displays as one segment yields a 404.
+        seen = []
+
+        def capture(url):
+            seen.append(url)
+            return _ecb_payload(_dt.date(2019, 1, 1), _dt.date(2020, 12, 31), 2.0)
+
+        market_data.fetch_risk_free_returns(
+            2020, 2020, cache_dir=tmp_path, http_get=capture
+        )
+        assert seen == [
+            "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT"
+            "?format=csvdata&startPeriod=2019-01-01&endPeriod=2020-12-31"
+        ]
+
+    def test_series_key_with_a_slash_is_passed_through(self, tmp_path):
+        seen = []
+
+        def capture(url):
+            seen.append(url)
+            return _ecb_payload(_dt.date(2019, 1, 1), _dt.date(2020, 12, 31), 2.0)
+
+        market_data.fetch_risk_free_returns(
+            2020,
+            2020,
+            series_key="EST/B.EU000A2X2A25.WT",
+            cache_dir=tmp_path,
+            http_get=capture,
+        )
+        assert seen[0].startswith(
+            "https://data-api.ecb.europa.eu/service/data/EST/B.EU000A2X2A25.WT?"
+        )
+
+    def test_rejects_a_series_key_without_a_dataflow(self, tmp_path):
+        with pytest.raises(market_data.MarketDataError):
+            market_data.fetch_risk_free_returns(
+                2020,
+                2020,
+                series_key="EST",
+                cache_dir=tmp_path,
+                http_get=lambda url: b"",
+            )
+
+    def test_raises_market_data_error_on_a_response_without_observations(self, tmp_path):
+        with pytest.raises(market_data.MarketDataError):
+            market_data.fetch_risk_free_returns(
+                2020,
+                2020,
+                cache_dir=tmp_path,
+                http_get=lambda url: b"TIME_PERIOD,OBS_VALUE\n",
+            )
+
+    def test_business_day_quotes_compound_over_the_weekend(self, tmp_path):
+        # €STR is published on business days only; each fixing earns until
+        # the next one, so a constant 3.5% must still compound to ~3.5% and
+        # not to the ~2.4% that counting 255 single days would give.
+        payload = _ecb_payload(
+            _dt.date(2019, 1, 1), _dt.date(2021, 12, 31), 3.5, business_days=True
+        )
+        series = market_data.fetch_risk_free_returns(
+            2020, 2021, cache_dir=tmp_path, http_get=lambda url: payload
+        )
+        assert series.loc[2020] == pytest.approx(0.035, abs=2e-3)
+        assert series.loc[2021] == pytest.approx(0.035, abs=2e-3)
+
+    def test_skips_rows_without_an_observation_value(self, tmp_path):
+        payload = _ecb_payload(_dt.date(2020, 1, 1), _dt.date(2020, 12, 31), 2.0)
+        payload += b"\n2020-12-31,"
+        series = market_data.fetch_risk_free_returns(
+            2020, 2020, cache_dir=tmp_path, http_get=lambda url: payload
+        )
+        assert series.loc[2020] == pytest.approx(0.0202, abs=1e-3)
 
 
 class TestFetchRealisedReturns:

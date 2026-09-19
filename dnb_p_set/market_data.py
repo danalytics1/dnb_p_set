@@ -39,6 +39,7 @@ __all__ = [
     "DEFAULT_CACHE_DIR",
     "MSCI_WORLD_TICKER",
     "ECB_RISK_FREE_SERIES",
+    "ECB_DATA_API",
     "fetch_msci_world_returns",
     "fetch_risk_free_returns",
     "fetch_realised_returns",
@@ -52,8 +53,13 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "dnb_p_set" / "market_data"
 MSCI_WORLD_TICKER = "URTH"
 
 #: ECB Data Portal series key for the euro short-term rate (€STR), used as
-#: the risk-free proxy for the beschermingsportefeuille.
+#: the risk-free proxy for the beschermingsportefeuille.  Written as the Data
+#: Portal displays it, dataflow first: :func:`_ecb_data_url` splits it into
+#: the ``<dataflow>/<key>`` path the API actually expects.
 ECB_RISK_FREE_SERIES = "EST.B.EU000A2X2A25.WT"
+
+#: Entry point of the ECB Data Portal's SDMX 2.1 data service.
+ECB_DATA_API = "https://data-api.ecb.europa.eu/service/data"
 
 _REQUEST_TIMEOUT = 10
 
@@ -189,7 +195,8 @@ def fetch_msci_world_returns(
             )
             return cached.loc[cached.index.intersection(range(start_year, end_year + 1))]
         raise MarketDataError(
-            f"kon MSCI World-koersen niet ophalen via Yahoo Finance ({ticker})"
+            f"kon MSCI World-koersen niet ophalen via Yahoo Finance "
+            f"({ticker}): {exc}"
         ) from exc
 
     prices = pd.Series(closes, index=pd.to_datetime(timestamps, unit="s"))
@@ -204,12 +211,72 @@ def fetch_msci_world_returns(
 # ---------------------------------------------------------------------------
 
 
+def _ecb_data_url(series_key: str, start_period: str, end_period: str) -> str:
+    """Build an ECB Data Portal data URL for a series key.
+
+    The API addresses a series as ``<dataflow>/<key>``, while the Data Portal
+    shows the same series as one dotted string with the dataflow in front
+    (``EST.B.EU000A2X2A25.WT``).  Sending that dotted string as a single path
+    segment asks for a dataflow that does not exist and the API answers 404,
+    so split off the leading dataflow here.  A key that already contains a
+    slash is passed through unchanged.
+    """
+    if "/" in series_key:
+        path = series_key.strip("/")
+    else:
+        dataflow, _, key = series_key.partition(".")
+        if not key:
+            raise MarketDataError(
+                f"ongeldige ECB-reekssleutel {series_key!r}: verwacht "
+                "<dataflow>.<reekssleutel>, bijvoorbeeld EST.B.EU000A2X2A25.WT"
+            )
+        path = f"{dataflow}/{key}"
+    return (
+        f"{ECB_DATA_API}/{path}?format=csvdata"
+        f"&startPeriod={start_period}&endPeriod={end_period}"
+    )
+
+
+def _short_rate_from_csv(raw: bytes) -> pd.Series:
+    """Parse the ECB ``csvdata`` response into a short rate in decimal."""
+    frame = pd.read_csv(io.BytesIO(raw))
+    missing = {"TIME_PERIOD", "OBS_VALUE"} - set(frame.columns)
+    if missing:
+        raise ValueError(
+            "onverwacht antwoord van de ECB Data Portal, kolommen ontbreken: "
+            + ", ".join(sorted(missing))
+        )
+    rate = pd.Series(
+        pd.to_numeric(frame["OBS_VALUE"], errors="coerce").to_numpy(dtype=float)
+        / 100.0,
+        index=pd.to_datetime(frame["TIME_PERIOD"]),
+    ).dropna()
+    if rate.empty:
+        raise ValueError("de ECB Data Portal gaf geen waarnemingen terug")
+    return rate
+
+
 def _annual_returns_from_short_rate(rate: pd.Series) -> pd.Series:
     """Compound a daily annualised short rate (e.g. €STR, in decimal) to
-    simple annual returns, ACT/365."""
+    simple annual returns, ACT/365.
+
+    The rate is published on business days only, but it earns over the
+    calendar days until the next publication: Friday's fixing covers the
+    weekend.  Each observation is therefore compounded over that gap — the
+    same convention as the ECB's own compounded €STR index — because
+    treating every observation as a single day would drop roughly a hundred
+    days of interest a year.
+    """
     rate = rate.dropna().sort_index()
-    daily_growth = (1.0 + rate) ** (1.0 / 365.0)
-    annual = daily_growth.groupby(daily_growth.index.year).prod() - 1.0
+    if rate.empty:
+        empty = pd.Series(dtype=float, name="rendement")
+        return empty
+    days = pd.Series(
+        rate.index.to_series().diff().shift(-1).dt.days.fillna(1.0).to_numpy(),
+        index=rate.index,
+    ).clip(lower=1.0)
+    growth = (1.0 + rate) ** (days / 365.0)
+    annual = growth.groupby(growth.index.year).prod() - 1.0
     annual.index = annual.index.astype(int)
     annual.index.name = None
     annual.name = "rendement"
@@ -248,18 +315,12 @@ def fetch_risk_free_returns(
     if not refresh and cached is not None and _covers(cached, start_year, end_year):
         return cached.loc[start_year:end_year]
 
-    url = (
-        "https://data-api.ecb.europa.eu/service/data/"
-        f"{series_key}?format=csvdata&startPeriod={start_year - 1}-01-01"
-        f"&endPeriod={end_year}-12-31"
+    url = _ecb_data_url(
+        series_key, f"{start_year - 1}-01-01", f"{end_year}-12-31"
     )
     try:
         raw = http_get(url)
-        frame = pd.read_csv(io.BytesIO(raw))
-        rate = pd.Series(
-            frame["OBS_VALUE"].to_numpy(dtype=float) / 100.0,
-            index=pd.to_datetime(frame["TIME_PERIOD"]),
-        )
+        rate = _short_rate_from_csv(raw)
     except Exception as exc:
         if cached is not None:
             logger.warning(
@@ -268,7 +329,8 @@ def fetch_risk_free_returns(
             )
             return cached.loc[cached.index.intersection(range(start_year, end_year + 1))]
         raise MarketDataError(
-            f"kon risicovrije rente niet ophalen via ECB Data Portal ({series_key})"
+            f"kon risicovrije rente niet ophalen via ECB Data Portal "
+            f"({series_key}): {exc}"
         ) from exc
 
     fresh = _annual_returns_from_short_rate(rate)
